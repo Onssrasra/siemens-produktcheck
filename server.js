@@ -87,31 +87,42 @@ function createOutputLayout(ws, headerRow, firstDataRow) {
   
   // Header-Zeile 3: Hauptüberschriften als Blöcke
   blocks.forEach(([startCol, endCol, title]) => {
-    ws.mergeCells(`${startCol}${headerRow}:${endCol}${headerRow}`);
-    ws.getCell(`${startCol}${headerRow}`).value = title;
-    ws.getCell(`${startCol}${headerRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
-    ws.getCell(`${startCol}${headerRow}`).font = { bold: true };
+    try {
+      ws.mergeCells(`${startCol}${headerRow}:${endCol}${headerRow}`);
+      const cell = ws.getCell(`${startCol}${headerRow}`);
+      cell.value = title;
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.font = { bold: true };
+    } catch (error) {
+      console.log(`Fehler beim Zusammenführen von ${startCol}${headerRow}:${endCol}${headerRow}:`, error.message);
+    }
   });
   
   // Header-Zeile 4: Unterüberschriften
   blocks.forEach(([startCol, endCol, title, dbCol, webCol]) => {
-    ws.getCell(`${dbCol}${headerRow + 1}`).value = 'DB-Wert';
-    ws.getCell(`${webCol}${headerRow + 1}`).value = 'Web-Wert';
+    // DB-Wert
+    const dbCell = ws.getCell(`${dbCol}${headerRow + 1}`);
+    dbCell.value = 'DB-Wert';
+    dbCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    dbCell.font = { bold: true };
     
-    // Formatierung der Unterüberschriften
-    [dbCol, webCol].forEach(col => {
-      ws.getCell(`${col}${headerRow + 1}`).alignment = { horizontal: 'center', vertical: 'middle' };
-      ws.getCell(`${col}${headerRow + 1}`).font = { bold: true };
-    });
+    // Web-Wert
+    const webCell = ws.getCell(`${webCol}${headerRow + 1}`);
+    webCell.value = 'Web-Wert';
+    webCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    webCell.font = { bold: true };
   });
   
   // Produkt-ID Spalte (A2V) - Spalte A
-  ws.getCell(`A${headerRow}`).value = 'Produkt-ID';
-  ws.getCell(`A${headerRow + 1}`).value = 'A2V';
-  ws.getCell(`A${headerRow}`).font = { bold: true };
-  ws.getCell(`A${headerRow + 1}`).font = { bold: true };
-  ws.getCell(`A${headerRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
-  ws.getCell(`A${headerRow + 1}`).alignment = { horizontal: 'center', vertical: 'middle' };
+  const idCell = ws.getCell(`A${headerRow}`);
+  idCell.value = 'Produkt-ID';
+  idCell.font = { bold: true };
+  idCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  
+  const a2vCell = ws.getCell(`A${headerRow + 1}`);
+  a2vCell.value = 'A2V';
+  a2vCell.font = { bold: true };
+  a2vCell.alignment = { horizontal: 'center', vertical: 'middle' };
 }
 
 // Neue Funktion zum Mapping der Spalten basierend auf Header-Text
@@ -162,6 +173,8 @@ app.post('/api/process-excel', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Bitte Excel-Datei hochladen (file).' });
 
+    console.log('Verarbeite Excel-Datei:', req.file.originalname, 'Größe:', req.file.size);
+
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(req.file.buffer);
 
@@ -169,8 +182,11 @@ app.post('/api/process-excel', upload.single('file'), async (req, res) => {
     const ws = wb.getWorksheet(1); // Erstes Blatt
     if (!ws) return res.status(400).json({ error: 'Kein Arbeitsblatt gefunden.' });
 
+    console.log('Arbeitsblatt gefunden:', ws.name, 'Zeilen:', ws.rowCount, 'Spalten:', ws.columnCount);
+
     // Spalten basierend auf Header-Text finden
     const columns = findColumnsByHeader(ws, HEADER_ROW);
+    console.log('Gefundene Spalten:', columns);
     
     // A2V-Spalte finden (normalerweise Spalte Z oder durch Header-Text)
     let a2vColumn = 'Z'; // Fallback
@@ -182,6 +198,7 @@ app.post('/api/process-excel', upload.single('file'), async (req, res) => {
         break;
       }
     }
+    console.log('A2V-Spalte gefunden:', a2vColumn);
 
     // 1) A2V-Nummern aus der gefundenen Spalte ab Zeile 4 einsammeln
     const tasks = [];
@@ -196,51 +213,68 @@ app.post('/api/process-excel', upload.single('file'), async (req, res) => {
       }
     }
 
+    console.log('Gefundene A2V-Nummern:', tasks.length, tasks.slice(0, 5));
+
     if (tasks.length === 0) {
       return res.status(400).json({ error: 'Keine A2V-Nummern in der Tabelle gefunden.' });
     }
 
     // 2) Web-Daten scrapen
+    console.log('Starte Web-Scraping für', tasks.length, 'Produkte...');
     const resultsMap = await scraper.scrapeMany(tasks, SCRAPE_CONCURRENCY);
+    console.log('Web-Scraping abgeschlossen,', resultsMap.size, 'Ergebnisse erhalten');
 
     // 3) Neue Ausgangstabelle mit dem gewünschten Layout erstellen
+    console.log('Erstelle neue Ausgangstabelle...');
     const newWs = wb.addWorksheet('Produktvergleich');
     createOutputLayout(newWs, HEADER_ROW, FIRST_DATA_ROW);
+    console.log('Layout erstellt');
 
     // 4) Daten verarbeiten und in die neue Tabelle schreiben
+    console.log('Verarbeite Daten...');
     for (let i = 0; i < dataRows.length; i++) {
       const sourceRow = dataRows[i];
       const targetRow = FIRST_DATA_ROW + i;
       const a2v = tasks[i];
       const web = resultsMap.get(a2v) || {};
 
+      console.log(`Verarbeite Zeile ${i + 1}/${dataRows.length}: ${a2v}`);
+
       // Produkt-ID (A2V)
       newWs.getCell(`A${targetRow}`).value = a2v;
 
       // DB-Werte aus der ursprünglichen Tabelle kopieren
       if (columns['Materialkurztext']) {
-        newWs.getCell(`C${targetRow}`).value = ws.getCell(`${columns['Materialkurztext']}${sourceRow}`).value;
+        const sourceValue = ws.getCell(`${columns['Materialkurztext']}${sourceRow}`).value;
+        newWs.getCell(`C${targetRow}`).value = sourceValue;
       }
       if (columns['Her.-Artikelnummer']) {
-        newWs.getCell(`E${targetRow}`).value = ws.getCell(`${columns['Her.-Artikelnummer']}${sourceRow}`).value;
+        const sourceValue = ws.getCell(`${columns['Her.-Artikelnummer']}${sourceRow}`).value;
+        newWs.getCell(`E${targetRow}`).value = sourceValue;
       }
       if (columns['Fert./Prüfhinweis']) {
-        newWs.getCell(`G${targetRow}`).value = ws.getCell(`${columns['Fert./Prüfhinweis']}${sourceRow}`).value;
+        const sourceValue = ws.getCell(`${columns['Fert./Prüfhinweis']}${sourceRow}`).value;
+        newWs.getCell(`G${targetRow}`).value = sourceValue;
       }
       if (columns['Werkstoff']) {
-        newWs.getCell(`I${targetRow}`).value = ws.getCell(`${columns['Werkstoff']}${sourceRow}`).value;
+        const sourceValue = ws.getCell(`${columns['Werkstoff']}${sourceRow}`).value;
+        newWs.getCell(`I${targetRow}`).value = sourceValue;
       }
       if (columns['Nettogewicht']) {
-        newWs.getCell(`K${targetRow}`).value = ws.getCell(`${columns['Nettogewicht']}${sourceRow}`).value;
+        const sourceValue = ws.getCell(`${columns['Nettogewicht']}${sourceRow}`).value;
+        newWs.getCell(`K${targetRow}`).value = sourceValue;
       }
       if (columns['Länge']) {
-        newWs.getCell(`M${targetRow}`).value = ws.getCell(`${columns['Länge']}${sourceRow}`).value;
+        const sourceValue = ws.getCell(`${columns['Länge']}${sourceRow}`).value;
+        newWs.getCell(`M${targetRow}`).value = sourceValue;
       }
       if (columns['Breite']) {
-        newWs.getCell(`O${targetRow}`).value = ws.getCell(`${columns['Breite']}${sourceRow}`).value;
+        const sourceValue = ws.getCell(`${columns['Breite']}${sourceRow}`).value;
+        newWs.getCell(`O${targetRow}`).value = sourceValue;
       }
       if (columns['Höhe']) {
-        newWs.getCell(`Q${targetRow}`).value = ws.getCell(`${columns['Höhe']}${sourceRow}`).value;
+        const sourceValue = ws.getCell(`${columns['Höhe']}${sourceRow}`).value;
+        newWs.getCell(`Q${targetRow}`).value = sourceValue;
       }
 
       // Web-Werte setzen und vergleichen
@@ -335,16 +369,20 @@ app.post('/api/process-excel', upload.single('file'), async (req, res) => {
     }
 
     // Ursprüngliches Blatt löschen und neues umbenennen
+    console.log('Lösche ursprüngliches Blatt und benenne neues um...');
     wb.removeWorksheet(ws.id);
     newWs.name = 'Produktvergleich';
 
+    console.log('Erstelle Excel-Datei...');
     const out = await wb.xlsx.writeBuffer();
+    console.log('Excel-Datei erstellt, Größe:', out.length);
+    
     res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition','attachment; filename="DB_Produktvergleich_verarbeitet.xlsx"');
     res.send(Buffer.from(out));
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    console.error('Fehler bei der Excel-Verarbeitung:', err);
+    res.status(500).json({ error: err.message, stack: err.stack });
   }
 });
 

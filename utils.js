@@ -103,14 +103,20 @@ function normPartNo(s) {
  * Exakte Gewichtsvergleiche ohne Toleranz
  * Vergleicht zwei Gewichtswerte in kg
  */
-function compareWeightExact(weight1, weight2) {
-  if (weight1 == null || weight2 == null) return false;
-  const w1 = toNumber(weight1);
-  const w2 = toNumber(weight2);
-  if (w1 == null || w2 == null) return false;
+function compareWeightExact(weight1, webVal) {
+  if (weight1 == null) return false;
+  
+  const { value: wv, unit: wu } = parseWeight(webVal);
+  if (wv == null) return false;
+  
+  const exNum = toNumber(weight1);
+  if (exNum == null) return false;
+  
+  const webKg = weightToKg(wv, wu || 'kg');
+  if (webKg == null) return false;
   
   // Exakte Gleichheit ohne Toleranz
-  return Math.abs(w1 - w2) < 1e-9;
+  return Math.abs(exNum - webKg) < 1e-9;
 }
 
 /**
