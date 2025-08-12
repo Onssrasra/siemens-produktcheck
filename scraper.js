@@ -11,10 +11,27 @@ function a2vUrl(a2v) {
 }
 
 function extractJsonInitialData(html) {
-  const re = /window\.initialData\[['"]product\/dataProduct['"]]\s*=\s*(\{[\s\S]*?\});\s*<\/script>/i;
-  const m = html.match(re);
-  if (!m) return null;
-  try { return JSON.parse(m[1]); } catch { return null; }
+  // Verschiedene mögliche JSON-Formate versuchen
+  const patterns = [
+    /window\.initialData\[['"]product\/dataProduct['"]]\s*=\s*(\{[\s\S]*?\});\s*<\/script>/i,
+    /window\.initialData\s*=\s*(\{[\s\S]*?\});\s*<\/script>/i,
+    /initialData\[['"]product\/dataProduct['"]]\s*=\s*(\{[\s\S]*?\});/i,
+    /initialData\s*=\s*(\{[\s\S]*?\});/i
+  ];
+  
+  for (const pattern of patterns) {
+    const m = html.match(pattern);
+    if (m) {
+      try { 
+        const parsed = JSON.parse(m[1]);
+        console.log(`Successfully extracted JSON for product data`);
+        return parsed; 
+      } catch (e) {
+        console.log(`Failed to parse JSON with pattern: ${pattern}`);
+      }
+    }
+  }
+  return null;
 }
 
 function mapFromInitialData(obj, a2v, url) {
@@ -39,6 +56,19 @@ function mapFromInitialData(obj, a2v, url) {
     const materialklass = pickTs('materialklassifizierung') || product.materialClassification || 'Nicht gefunden';
     const name = product.name || 'Nicht gefunden';
     const code = product.code || a2v;
+    
+    // Abmessungen extrahieren - erweiterte Suche
+    let abmessung = pickTs('abmess') || pickTs('dimension') || pickTs('größe') || pickTs('size') || pickTs('maße') || pickTs('measure') || pickTs('länge') || pickTs('breite') || pickTs('höhe') || pickTs('length') || pickTs('width') || pickTs('height') || pickTs('abmessungen') || pickTs('dimensions') || pickTs('abmessung') || 'Nicht gefunden';
+    
+    // Debug-Logging für Abmessungen
+    if (abmessung !== 'Nicht gefunden') {
+      console.log(`Found dimensions for ${a2v}: "${abmessung}"`);
+    } else {
+      console.log(`No dimensions found for ${a2v}. Available keys:`, Object.keys(tsMap).slice(0, 10)); // Nur erste 10 Keys anzeigen
+    }
+    
+    // Werkstoff extrahieren
+    let werkstoff = pickTs('werkstoff') || (pickTs('material') && !pickTs('material','klass')) || 'Nicht gefunden';
 
     return {
       A2V: code,
@@ -46,8 +76,8 @@ function mapFromInitialData(obj, a2v, url) {
       Produkttitel: name,
       'Weitere Artikelnummer': weitere,
       Gewicht: gewicht,
-      Abmessung: 'Nicht gefunden',
-      Werkstoff: 'Nicht gefunden',
+      Abmessung: abmessung,
+      Werkstoff: werkstoff,
       Materialklassifizierung: materialklass,
       Status: 'initialData JSON'
     };
@@ -107,7 +137,7 @@ class SiemensProductScraper {
         pick(['additional','material','number']) ||
         pick(['part','number']) || 'Nicht gefunden',
       Gewicht:  pick(['gewicht']) || pick(['weight']) || 'Nicht gefunden',
-      Abmessung: pick(['abmess']) || pick(['dimension']) || 'Nicht gefunden',
+      Abmessung: pick(['abmess']) || pick(['dimension']) || pick(['größe']) || pick(['size']) || 'Nicht gefunden',
       Werkstoff: (pick(['werkstoff']) || (pick(['material']) && !pick(['material','klass']))) || 'Nicht gefunden',
       Materialklassifizierung: pick(['material','klass']) || pick(['material','class']) || 'Nicht gefunden',
       Status: 'HTTP-Parser'
@@ -213,7 +243,7 @@ class SiemensProductScraper {
       'Weitere Artikelnummer':
         pick(['weitere','artikelnummer']) || pick(['additional','material','number']) || pick(['part','number']) || 'Nicht gefunden',
       Gewicht:  pick(['gewicht']) || pick(['weight']) || 'Nicht gefunden',
-      Abmessung: pick(['abmess']) || pick(['dimension']) || 'Nicht gefunden',
+      Abmessung: pick(['abmess']) || pick(['dimension']) || pick(['größe']) || pick(['size']) || 'Nicht gefunden',
       Werkstoff: (pick(['werkstoff']) || (pick(['material']) && !pick(['material','klass']))) || 'Nicht gefunden',
       Materialklassifizierung: pick(['material','klass']) || pick(['material','class']) || 'Nicht gefunden',
       Status: 'Playwright'

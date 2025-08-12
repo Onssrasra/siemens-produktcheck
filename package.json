@@ -1,6 +1,7 @@
 {
-  "name": "db-produktvergleich-tool",
-  "version": "2.0.1",
+  "name": "qmp-siemens-produktcheck",
+  "version": "2.1.0",
+  "description": "QMP Siemens Produktcheck - DB vs. Web Vergleich mit Spaltenblöcken",
   "private": true,
   "engines": {
     "node": ">=18"
@@ -18,5 +19,15 @@
     "exceljs": "^4.4.0",
     "cheerio": "^1.0.0-rc.12",
     "playwright": "^1.45.1"
-  }
+  },
+  "keywords": [
+    "siemens",
+    "produktcheck",
+    "excel",
+    "web-scraping",
+    "mymobase",
+    "qmp"
+  ],
+  "author": "QMP Team",
+  "license": "MIT"
 }
