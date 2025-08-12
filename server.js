@@ -5,6 +5,16 @@ const path = require('path');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
 
+// Besseres Error-Handling für fehlende Module
+let scraper;
+try {
+  const { SiemensProductScraper, a2vUrl } = require('./scraper');
+  scraper = new SiemensProductScraper();
+} catch (error) {
+  console.error('Fehler beim Laden des Scrapers:', error.message);
+  scraper = null;
+}
+
 const {
   toNumber,
   parseWeight,
@@ -16,7 +26,6 @@ const {
   compareTextExact,
   compareWeightExact
 } = require('./utils');
-const { SiemensProductScraper, a2vUrl } = require('./scraper');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,12 +33,27 @@ const SCRAPE_CONCURRENCY = Number(process.env.SCRAPE_CONCURRENCY || 4);
 const HEADER_ROW = 3;
 const FIRST_DATA_ROW = 4;
 
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors());
+// Bessere Middleware-Konfiguration
+app.use(helmet({ 
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false
+}));
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type']
+}));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(__dirname));
 
-const scraper = new SiemensProductScraper();
+// Health Check Route
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    scraper: scraper ? 'loaded' : 'error'
+  });
+});
 
 // Neue Farbkodierung: grün (gleich), rot (ungleich), orange (fehlt)
 function fillColor(ws, addr, color) {
@@ -183,10 +207,33 @@ function findColumnsByHeader(ws, headerRow) {
 }
 
 // Routes
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+app.get('/', (req, res) => {
+  try {
+    res.sendFile(path.join(__dirname, 'index.html'));
+  } catch (error) {
+    console.error('Fehler beim Laden der Hauptseite:', error);
+    res.status(500).send('Fehler beim Laden der Seite');
+  }
+});
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+app.get('/api/health', (req, res) => res.json({ 
+  ok: true, 
+  time: new Date().toISOString(),
+  scraper: scraper ? 'loaded' : 'error'
+}));
+
+const upload = multer({ 
+  storage: multer.memoryStorage(), 
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+        file.mimetype === 'application/vnd.ms-excel') {
+      cb(null, true);
+    } else {
+      cb(new Error('Nur Excel-Dateien sind erlaubt'), false);
+    }
+  }
+});
 
 app.post('/api/process-excel', upload.single('file'), async (req, res) => {
   try {
@@ -246,10 +293,22 @@ app.post('/api/process-excel', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'Keine A2V-Nummern in der Tabelle gefunden.' });
     }
 
-    // 2) Web-Daten scrapen
-    console.log('Starte Web-Scraping für', tasks.length, 'Produkte...');
-    const resultsMap = await scraper.scrapeMany(tasks, SCRAPE_CONCURRENCY);
-    console.log('Web-Scraping abgeschlossen,', resultsMap.size, 'Ergebnisse erhalten');
+    // 2) Web-Daten scrapen (nur wenn Scraper verfügbar)
+    let resultsMap = new Map();
+    if (scraper) {
+      console.log('Starte Web-Scraping für', tasks.length, 'Produkte...');
+      try {
+        resultsMap = await scraper.scrapeMany(tasks, SCRAPE_CONCURRENCY);
+        console.log('Web-Scraping abgeschlossen,', resultsMap.size, 'Ergebnisse erhalten');
+      } catch (error) {
+        console.error('Fehler beim Web-Scraping:', error);
+        // Erstelle leere Ergebnisse für den Fall, dass Scraping fehlschlägt
+        tasks.forEach(task => resultsMap.set(task, {}));
+      }
+    } else {
+      console.log('Scraper nicht verfügbar, verwende leere Web-Daten');
+      tasks.forEach(task => resultsMap.set(task, {}));
+    }
 
     // 3) Neue Ausgangstabelle mit dem gewünschten Layout erstellen
     console.log('Erstelle neue Ausgangstabelle...');
@@ -423,4 +482,49 @@ app.post('/api/process-excel', upload.single('file'), async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`QMP Siemens Produktcheck Server läuft auf Port ${PORT}`));
+// Error Handler
+app.use((err, req, res, next) => {
+  console.error('Unbehandelter Fehler:', err);
+  res.status(500).json({ error: 'Interner Server-Fehler', message: err.message });
+});
+
+// 404 Handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Route nicht gefunden' });
+});
+
+// Graceful Shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM empfangen, starte Graceful Shutdown...');
+  if (scraper) {
+    scraper.close().then(() => {
+      console.log('Scraper geschlossen');
+      process.exit(0);
+    });
+  } else {
+    process.exit(0);
+  }
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT empfangen, starte Graceful Shutdown...');
+  if (scraper) {
+    scraper.close().then(() => {
+      console.log('Scraper geschlossen');
+      process.exit(0);
+    });
+  } else {
+    process.exit(0);
+  }
+});
+
+// Server starten
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`QMP Siemens Produktcheck Server läuft auf Port ${PORT}`);
+  console.log(`Health Check verfügbar unter: http://localhost:${PORT}/health`);
+});
+
+// Timeout für Render
+server.timeout = 300000; // 5 Minuten
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
