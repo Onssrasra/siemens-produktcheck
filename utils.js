@@ -47,49 +47,24 @@ function weightToKg(value, unit) {
 /**
  * Dimensions-Parser:
  * - akzeptiert "L×B×H", "LxBxH", "40X40X42", "30x20x10 mm", etc.
- * - Standard-Reihenfolge: Länge × Breite × Höhe (L×B×H)
- * - unterstützt auch Zylinder-Formate: "D×H", "DxH", "20x30 mm" (Durchmesser x Höhe)
  * - Ergebnis in mm (falls Einheiten erkennbar), sonst roh.
  */
 function parseDimensionsToLBH(text) {
-  if (!text) return { L: null, B: null, H: null };
+  if (!text) return { L:null, B:null, H:null };
   const raw = String(text).trim();
+  let s = raw.toLowerCase().replace(/[×x]/g, 'x').replace(',', '.').replace(/\s+/g, '');
 
-  // 1) Einheit in mm|cm|m erkennen, aber entfernen
-  let scale = 1;
-  let s = raw.toLowerCase()
-             .replace(/[,;]/g, '.')          // Komma oder Semikolon → Punkt
-             .replace(/\s+/g, '')            // Leerzeichen killen
-             .replace(/[×xX*/]/g, 'x');      // *, ×, X, / → x
+  // Einheit erkennen (mm, cm, m)
+  let scale = 1; // default mm
+  if (/(^|\D)cm\b/.test(s) || s.endsWith('cm')) scale = 10;
+  if (/(^|\D)m\b/.test(s) || s.endsWith('m')) scale = 1000;
 
-  if (/cm\b/.test(s)) { scale = 10;  s = s.replace(/cm\b/g, ''); }
-  if (/(^|\D)m\b/.test(s)) { scale = 1000; s = s.replace(/m\b/g, ''); }
-
-  // 2) Bis zu 3 Zahlen extrahieren - verbesserte Regex für verschiedene Formate
   const nums = (s.match(/-?\d+(?:\.\d+)?/g) || []).map(parseFloat);
-  
-  let L, B, H;
-  
-  if (nums.length === 2) {
-    // Zylinder-Format: Durchmesser x Höhe
-    // Durchmesser = Breite (B), Höhe = Höhe (H), Länge = null
-    L = null;
-    B = nums[0] != null ? Math.round(nums[0] * scale) : null;
-    H = nums[1] != null ? Math.round(nums[1] * scale) : null;
-    console.log(`Parsed cylinder dimensions: "${raw}" -> Durchmesser:${B}, Höhe:${H}`);
-  } else if (nums.length === 3) {
-    // Quader-Format: Länge x Breite x Höhe (Standard-Reihenfolge)
-    [L, B, H] = nums.map(n => n != null ? Math.round(n * scale) : null);
-    console.log(`Parsed cuboid dimensions: "${raw}" -> Länge:${L}, Breite:${B}, Höhe:${H}`);
-  } else {
-    // Unbekanntes Format
-    L = B = H = null;
-    console.log(`Unknown dimension format: "${raw}"`);
-  }
-
+  const L = nums.length > 0 ? Math.round(nums[0] * scale) : null;
+  const B = nums.length > 1 ? Math.round(nums[1] * scale) : null;
+  const H = nums.length > 2 ? Math.round(nums[2] * scale) : null;
   return { L, B, H };
 }
-
 
 function normPartNo(s) {
   if (!s) return '';
