@@ -178,7 +178,6 @@ for (const ws of wb.worksheets) {
     }
   }
 }
-    }
 
     const out = await wb.xlsx.writeBuffer();
     res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
