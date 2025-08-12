@@ -1,14 +1,14 @@
 services:
   - type: web
-    name: db-produktvergleich
+    name: qmp-siemens-produktcheck
     env: node
     plan: starter
     buildCommand: npm install && npm run install-browsers
     startCommand: node server.js
     envVars:
       - key: SCRAPE_CONCURRENCY
-        value: "6"
-      - key: WEIGHT_TOL_PCT
-        value: "0"
+        value: "4"
       - key: NODE_VERSION
         value: "18"
+      - key: DISABLE_PLAYWRIGHT
+        value: "0"

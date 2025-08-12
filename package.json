@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node server.js",
+    "dev": "node server.js",
     "install-browsers": "npx playwright install --with-deps chromium",
     "postinstall": "if [ \"$INSTALL_PLAYWRIGHT\" = \"1\" ]; then npm run install-browsers; else echo 'Skipping Playwright install (INSTALL_PLAYWRIGHT!=1)'; fi"
   },

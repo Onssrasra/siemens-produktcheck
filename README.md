@@ -12,7 +12,7 @@ Ein Tool zur Verarbeitung von Excel-Dateien mit Siemens-Produktdaten, das Web-Da
 ### Exakte Vergleiche ohne Toleranz
 - **Stringfelder**: Exakte Gleichheit nach Trim (case-sensitive)
 - **Gewichte**: Exakte Gleichheit der Zahlen in kg
-- **Maße**: Exakte Gleichheit der Integer-Werte in mm
+- **Maße**: Exakte Integer-Gleichheit in mm
 
 ### Farbkodierung
 - 🟢 **Grün**: Exakte Übereinstimmung zwischen DB und Web
@@ -77,14 +77,59 @@ Q-R: Höhe (DB | Web)
 - Excel-Dateien mit A2V-Nummern
 - Internetverbindung für MyMobase-Scraping
 
-## 🛠️ Installation
+## 🛠️ Lokale Installation
 
 ```bash
+git clone <repository-url>
+cd qmp-siemens-produktcheck-main
 npm install
 npm start
 ```
 
 Das Tool läuft dann unter `http://localhost:3000`
+
+## 🚀 Deployment auf Render
+
+### 1. GitHub Repository vorbereiten
+```bash
+git add .
+git commit -m "QMP Siemens Produktcheck v2.1 - Neues Layout mit Spaltenblöcken"
+git push origin main
+```
+
+### 2. Render Service erstellen
+1. Gehen Sie zu [render.com](https://render.com)
+2. Klicken Sie auf "New +" → "Web Service"
+3. Verbinden Sie Ihr GitHub Repository
+4. Konfigurieren Sie den Service:
+   - **Name**: `qmp-siemens-produktcheck`
+   - **Environment**: `Node`
+   - **Build Command**: `npm install && npm run install-browsers`
+   - **Start Command**: `node server.js`
+   - **Plan**: `Starter` (oder höher)
+
+### 3. Umgebungsvariablen setzen
+- `SCRAPE_CONCURRENCY`: `4`
+- `NODE_VERSION`: `18`
+- `DISABLE_PLAYWRIGHT`: `0`
+
+### 4. Deploy
+- Klicken Sie auf "Create Web Service"
+- Render baut und deployed automatisch
+- Die URL wird nach dem Build angezeigt
+
+## 🧪 Testen
+
+### Test-Excel erstellen
+```bash
+node test-excel.js
+```
+
+### Test-Datei verwenden
+1. Öffnen Sie die Web-Oberfläche
+2. Laden Sie `test-input.xlsx` hoch
+3. Klicken Sie auf "Verarbeiten"
+4. Laden Sie das Ergebnis herunter
 
 ## 📝 Changelog
 
@@ -95,6 +140,8 @@ Das Tool läuft dann unter `http://localhost:3000`
 - ✅ Verbesserte Farbkodierung (Grün/Rot/Orange)
 - ✅ Dynamische Spaltenerkennung
 - ✅ Optimierte Web-Daten-Extraktion
+- ✅ Render-Deployment optimiert
+- ✅ Verbessertes Error-Handling
 
 ### Version 2.0
 - Grundlegende Funktionalität
@@ -102,6 +149,21 @@ Das Tool läuft dann unter `http://localhost:3000`
 - MyMobase-Scraping
 - Einfache Vergleiche
 
+## 🔍 Troubleshooting
+
+### HTTP 500 Fehler
+- Überprüfen Sie die Render-Logs
+- Stellen Sie sicher, dass alle Abhängigkeiten installiert sind
+- Überprüfen Sie die Excel-Datei auf korrekte Struktur
+
+### Spaltenblöcke werden nicht erstellt
+- Überprüfen Sie die Header-Zeile (Zeile 3)
+- Stellen Sie sicher, dass A2V-Nummern in der Produkt-ID-Spalte stehen
+- Überprüfen Sie die Render-Logs für Details
+
 ## 🤝 Support
 
-Bei Fragen oder Problemen wenden Sie sich an das Entwicklungsteam. 
+Bei Fragen oder Problemen:
+1. Überprüfen Sie die Render-Logs
+2. Testen Sie mit der Test-Excel-Datei
+3. Wenden Sie sich an das Entwicklungsteam 
