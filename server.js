@@ -77,43 +77,25 @@ function eqWeight(exS, exT, webVal) {
 
 // Neue Funktion: Erstelle das gewünschte Layout
 function createComparisonLayout(ws, headerRow, firstDataRow) {
-  // Zeile 3: Hauptüberschriften als Blöcke
-  const mainHeaders = [
-    { name: 'Material', cols: ['A', 'A'] },
-    { name: 'Herstellername', cols: ['B', 'B'] },
-    { name: 'Materialkurztext', cols: ['C', 'D'] },
-    { name: 'Her.-Artikelnummer', cols: ['E', 'F'] },
-    { name: 'Fert./Prüfhinweis', cols: ['G', 'H'] },
-    { name: 'Werkstoff', cols: ['I', 'J'] },
-    { name: 'Nettogewicht', cols: ['K', 'L'] },
-    { name: 'Länge', cols: ['M', 'N'] },
-    { name: 'Breite', cols: ['O', 'P'] },
-    { name: 'Höhe', cols: ['Q', 'R'] },
-    { name: 'Produkt-ID', cols: ['S', 'S'] }
-  ];
+  // Zeile 4: Neue Zeile mit "DB-Wert" und "Web-Wert" nur unter den relevanten Spalten
+  // Diese Spalten bekommen eine neue Zeile 4 mit DB-Wert/Web-Wert:
+  const comparisonColumns = {
+    'C': 'D', // Materialkurztext: C=DB, D=Web
+    'E': 'F', // Her.-Artikelnummer: E=DB, F=Web  
+    'G': 'H', // Fert./Prüfhinweis: G=DB, H=Web
+    'I': 'J', // Werkstoff: I=DB, J=Web
+    'K': 'L', // Nettogewicht: K=DB, L=Web
+    'M': 'N', // Länge: M=DB, N=Web
+    'O': 'P', // Breite: O=DB, P=Web
+    'Q': 'R'  // Höhe: Q=DB, R=Web
+  };
 
-  // Hauptüberschriften setzen und Zellen zusammenfassen
-  mainHeaders.forEach((header, index) => {
-    const startCol = header.cols[0];
-    const endCol = header.cols[1];
-    ws.getCell(`${startCol}${headerRow}`).value = header.name;
+  // Neue Spalten für Web-Werte einfügen (nach den bestehenden DB-Spalten)
+  Object.entries(comparisonColumns).forEach(([dbCol, webCol]) => {
+    // Web-Spalte einfügen (nach der DB-Spalte)
+    ws.getColumn(webCol).insert(1);
     
-    // Nur zusammenfassen wenn es zwei verschiedene Spalten sind
-    if (startCol !== endCol) {
-      ws.mergeCells(`${startCol}${headerRow}:${endCol}${headerRow}`);
-    }
-    
-    // Zentrieren und Formatierung
-    ws.getCell(`${startCol}${headerRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
-    ws.getCell(`${startCol}${headerRow}`).font = { bold: true };
-  });
-
-  // Zeile 4: Unterüberschriften (DB-Wert und Web-Wert) nur für die Blöcke
-  const blockHeaders = mainHeaders.filter(h => h.cols[0] !== h.cols[1]);
-  blockHeaders.forEach((header) => {
-    const dbCol = header.cols[0];
-    const webCol = header.cols[1];
-    
+    // Zeile 4: DB-Wert und Web-Wert setzen
     ws.getCell(`${dbCol}${headerRow + 1}`).value = 'DB-Wert';
     ws.getCell(`${webCol}${headerRow + 1}`).value = 'Web-Wert';
     
@@ -122,33 +104,6 @@ function createComparisonLayout(ws, headerRow, firstDataRow) {
       ws.getCell(`${col}${headerRow + 1}`).alignment = { horizontal: 'center', vertical: 'middle' };
       ws.getCell(`${col}${headerRow + 1}`).font = { bold: true, size: 12 };
     });
-  });
-
-  // Spaltenbreiten anpassen
-  const columnWidths = {
-    'A': 15, // Material
-    'B': 20, // Herstellername
-    'C': 20, // Materialkurztext DB
-    'D': 20, // Materialkurztext Web
-    'E': 20, // Her.-Artikelnummer DB
-    'F': 20, // Her.-Artikelnummer Web
-    'G': 20, // Fert./Prüfhinweis DB
-    'H': 20, // Fert./Prüfhinweis Web
-    'I': 20, // Werkstoff DB
-    'J': 20, // Werkstoff Web
-    'K': 15, // Nettogewicht DB
-    'L': 15, // Nettogewicht Web
-    'M': 12, // Länge DB
-    'N': 12, // Länge Web
-    'O': 12, // Breite DB
-    'P': 12, // Breite Web
-    'Q': 12, // Höhe DB
-    'R': 12, // Höhe Web
-    'S': 20  // Produkt-ID
-  };
-
-  Object.entries(columnWidths).forEach(([col, width]) => {
-    ws.getColumn(col).width = width;
   });
 
   // Header-Zeilen einfrieren
@@ -161,35 +116,7 @@ function createComparisonLayout(ws, headerRow, firstDataRow) {
   ];
 }
 
-// Neue Funktion: Kopiere DB-Daten in die neue Struktur
-function copyDBDataToNewLayout(ws, sourceRow, targetRow, headerRow, firstDataRow) {
-  // Mapping der alten Spalten zu den neuen DB-Spalten
-  const columnMapping = {
-    'A': 'A', // Material
-    'B': 'B', // Herstellername
-    'C': 'C', // Materialkurztext DB
-    'E': 'E', // Her.-Artikelnummer DB
-    'N': 'G', // Fert./Prüfhinweis DB
-    'P': 'I', // Werkstoff DB
-    'S': 'K', // Nettogewicht DB
-    'U': 'M', // Länge DB
-    'V': 'O', // Breite DB
-    'W': 'Q', // Höhe DB
-    'Z': 'S'  // Produkt-ID
-  };
 
-  // DB-Daten kopieren
-  Object.entries(columnMapping).forEach(([sourceCol, targetCol]) => {
-    const sourceCell = ws.getCell(`${sourceCol}${sourceRow}`);
-    if (sourceCell.value != null) {
-      ws.getCell(`${targetCol}${targetRow}`).value = sourceCell.value;
-    }
-  });
-
-  // Debug-Logging
-  console.log(`Copying DB data from row ${sourceRow} to row ${targetRow}`);
-  console.log(`Column mapping:`, columnMapping);
-}
 
 // Neue Funktion: Setze Web-Daten und färbe entsprechend
 function setWebDataAndColor(ws, targetRow, webData, dbData, headerRow, firstDataRow) {
@@ -305,84 +232,75 @@ app.post('/api/process-excel', upload.single('file'), async (req, res) => {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(req.file.buffer);
 
-    // Neues Arbeitsblatt für den Vergleich erstellen
-    const newWs = wb.addWorksheet('DB_vs_Web_Vergleich');
-    
-    // Layout erstellen
-    createComparisonLayout(newWs, HEADER_ROW, FIRST_DATA_ROW);
+    // Das erste Arbeitsblatt verwenden (nicht neu erstellen)
+    const ws = wb.getWorksheet(1);
+    if (!ws) {
+      return res.status(400).json({ error: 'Kein Arbeitsblatt in der Excel-Datei gefunden.' });
+    }
+
+    // Layout anpassen (neue Zeile 4 mit DB-Wert/Web-Wert hinzufügen)
+    createComparisonLayout(ws, HEADER_ROW, FIRST_DATA_ROW);
 
     // 1) A2V-Nummern aus Spalte Z ab Zeile 4 einsammeln
     const tasks = [];
-    const rowsPerSheet = new Map(); // ws -> [rowIndex,...]
-    for (const ws of wb.worksheets) {
-      if (ws.name === 'DB_vs_Web_Vergleich') continue; // Neues Blatt überspringen
-      
-      const indices = [];
-      const last = ws.lastRow?.number || 0;
-      for (let r = FIRST_DATA_ROW; r <= last; r++) {
-        const a2v = (ws.getCell(`${COLS.Z}${r}`).value || '').toString().trim().toUpperCase();
-        if (a2v.startsWith('A2V')) {
-          indices.push(r);
-          tasks.push(a2v);
-        }
+    const prodRows = [];
+    const last = ws.lastRow?.number || 0;
+    for (let r = FIRST_DATA_ROW; r <= last; r++) {
+      const a2v = (ws.getCell(`${COLS.Z}${r}`).value || '').toString().trim().toUpperCase();
+      if (a2v.startsWith('A2V')) {
+        prodRows.push(r);
+        tasks.push(a2v);
       }
-      rowsPerSheet.set(ws, indices);
     }
 
     // 2) Scrapen
     const resultsMap = await scraper.scrapeMany(tasks, SCRAPE_CONCURRENCY);
 
-    // 3) Neue Tabelle mit DB vs Web Daten erstellen
-    let newRowIndex = FIRST_DATA_ROW;
-    
-    for (const ws of wb.worksheets) {
-      if (ws.name === 'DB_vs_Web_Vergleich') continue;
-      
-      const prodRows = rowsPerSheet.get(ws) || [];
-      for (const sourceRow of prodRows) {
-        try {
-          const a2v = (ws.getCell(`${COLS.Z}${sourceRow}`).value || '').toString().trim().toUpperCase();
-          const webData = resultsMap.get(a2v) || {};
-
-          // DB-Daten aus der Quelltabelle extrahieren
-          const dbData = {
-            materialkurztext: ws.getCell(`${COLS.C}${sourceRow}`).value,
-            artikelnummer: ws.getCell(`${COLS.E}${sourceRow}`).value,
-            fertPruefhinweis: ws.getCell(`${COLS.N}${sourceRow}`).value,
-            werkstoff: ws.getCell(`${COLS.P}${sourceRow}`).value,
-            nettogewicht: ws.getCell(`${COLS.S}${sourceRow}`).value,
-            gewichtEinheit: ws.getCell(`${COLS.T}${sourceRow}`).value,
-            laenge: ws.getCell(`${COLS.U}${sourceRow}`).value,
-            breite: ws.getCell(`${COLS.V}${sourceRow}`).value,
-            hoehe: ws.getCell(`${COLS.W}${sourceRow}`).value
-          };
-
-          console.log(`Processing row ${sourceRow} with A2V: ${a2v}`);
-          console.log(`DB data:`, dbData);
-
-          // DB-Daten in die neue Struktur kopieren
-          copyDBDataToNewLayout(newWs, sourceRow, newRowIndex, HEADER_ROW, FIRST_DATA_ROW);
-
-          // Web-Daten setzen und einfärben
-          setWebDataAndColor(newWs, newRowIndex, webData, dbData, HEADER_ROW, FIRST_DATA_ROW);
-
-          newRowIndex++;
-        } catch (error) {
-          console.error(`Error processing row ${sourceRow}:`, error);
-          // Fehlerzeile überspringen und weitermachen
-          continue;
+    // 3) Alle Datenzeilen nach unten verschieben (wegen der neuen Zeile 4)
+    // Zuerst alle Zeilen ab Zeile 5 nach unten verschieben
+    for (let r = last; r >= FIRST_DATA_ROW; r--) {
+      // Alle Spalten von A bis Z kopieren
+      for (let col = 'A'; col <= 'Z'; col++) {
+        const sourceCell = ws.getCell(`${col}${r}`);
+        if (sourceCell.value != null) {
+          ws.getCell(`${col}${r + 1}`).value = sourceCell.value;
+          // Ursprüngliche Zelle leeren
+          ws.getCell(`${col}${r}`).value = null;
         }
       }
     }
 
-    // Alle anderen Arbeitsblätter entfernen
-    const sheetsToRemove = [];
-    wb.worksheets.forEach(ws => {
-      if (ws.name !== 'DB_vs_Web_Vergleich') {
-        sheetsToRemove.push(ws);
+    // 4) Web-Daten in die entsprechenden Web-Spalten eintragen
+    for (const sourceRow of prodRows) {
+      try {
+        const a2v = (ws.getCell(`${COLS.Z}${sourceRow + 1}`).value || '').toString().trim().toUpperCase();
+        const webData = resultsMap.get(a2v) || {};
+
+        // DB-Daten aus der verschobenen Zeile extrahieren
+        const dbData = {
+          materialkurztext: ws.getCell(`${COLS.C}${sourceRow + 1}`).value,
+          artikelnummer: ws.getCell(`${COLS.E}${sourceRow + 1}`).value,
+          fertPruefhinweis: ws.getCell(`${COLS.N}${sourceRow + 1}`).value,
+          werkstoff: ws.getCell(`${COLS.P}${sourceRow + 1}`).value,
+          nettogewicht: ws.getCell(`${COLS.S}${sourceRow + 1}`).value,
+          gewichtEinheit: ws.getCell(`${COLS.T}${sourceRow + 1}`).value,
+          laenge: ws.getCell(`${COLS.U}${sourceRow + 1}`).value,
+          breite: ws.getCell(`${COLS.V}${sourceRow + 1}`).value,
+          hoehe: ws.getCell(`${COLS.W}${sourceRow + 1}`).value
+        };
+
+        console.log(`Processing row ${sourceRow + 1} with A2V: ${a2v}`);
+        console.log(`DB data:`, dbData);
+
+        // Web-Daten setzen und einfärben
+        setWebDataAndColor(ws, sourceRow + 1, webData, dbData);
+
+      } catch (error) {
+        console.error(`Error processing row ${sourceRow + 1}:`, error);
+        // Fehlerzeile überspringen und weitermachen
+        continue;
       }
-    });
-    sheetsToRemove.forEach(ws => wb.removeWorksheet(ws.id));
+    }
 
     const out = await wb.xlsx.writeBuffer();
     res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
