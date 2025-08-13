@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>QMP Siemens Produktcheck - DB vs. Web Vergleich</title>
+  <title>Siemens Produktdaten – Vergleich</title>
 
   <!-- XLSX‑Lib, falls du die bereits lokal bundelst, kannst du diesen CDN‑Import entfernen -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -31,7 +31,7 @@
       padding: 20px 0;
     }
     .wrap {
-      max-width: 900px;
+      max-width: 800px;
       margin: 0 auto;
       padding: 0 20px;
     }
@@ -59,19 +59,12 @@
       margin-bottom: 20px;
     }
     
-    .header p {
-      margin: 0;
-      font-size: 16px;
-      color: var(--grey-4);
-      line-height: 1.5;
-    }
-    
     .divider {
       width: 100%;
       height: 4px;
       background: var(--db-red);
       border-radius: 2px;
-      margin: 20px auto;
+      margin: 0 auto;
     }
 
     /* ======= DROPZONE ======= */
@@ -290,20 +283,15 @@
     <div class="card">
       <!-- Header -->
       <div class="header">
-        <h1>QMP Siemens Produktcheck</h1>
-        <p>DB vs. Web Vergleich mit Spaltenblöcken</p>
+        <h1>Siemens Produktdatenvergleich</h1>
         <div class="divider"></div>
-        <p>
-          <strong>Neues Layout:</strong> Jeder Fachbegriff bildet einen Spaltenblock mit DB-Wert (links) und Web-Wert (rechts).<br>
-          <strong>Farbkodierung:</strong> Grün (gleich), Rot (ungleich), Orange (fehlt)
-        </p>
       </div>
 
       <!-- Drop‑Zone -->
       <div id="dropzone" class="dropzone">
         <div class="dropzone-icon">📁</div>
         <p id="dzText">
-          <strong>Excel-Datei hier ablegen</strong><br>
+          <strong>Datei hier ablegen</strong><br>
           oder klicken zum Auswählen
         </p>
         <p class="hint">Unterstützt .xlsx und .xls Dateien (max. 50 MB)</p>

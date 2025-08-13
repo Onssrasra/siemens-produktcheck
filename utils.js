@@ -1,4 +1,4 @@
-// utils.js - Normalisierung & Mapping für QMP Siemens Produktcheck
+// utils.js - Normalisierung & Mapping (aktualisiert)
 
 function a2vUrl(a2v) {
   const id = (a2v || '').toString().trim();
@@ -90,57 +90,20 @@ function parseDimensionsToLBH(text) {
   return { L, B, H };
 }
 
-/**
- * Artikelnummer normalisieren für exakte Vergleiche
- * Entfernt Leerzeichen, Bindestriche, Unterstriche und Schrägstriche
- */
+
 function normPartNo(s) {
   if (!s) return '';
   return String(s).toUpperCase().replace(/[\s\-\/_]+/g, '');
 }
 
-/**
- * Exakte Gewichtsvergleiche ohne Toleranz
- * Vergleicht zwei Gewichtswerte in kg
- */
-function compareWeightExact(weight1, webVal) {
-  if (weight1 == null) return false;
-  
-  const { value: wv, unit: wu } = parseWeight(webVal);
-  if (wv == null) return false;
-  
-  const exNum = toNumber(weight1);
-  if (exNum == null) return false;
-  
-  const webKg = weightToKg(wv, wu || 'kg');
-  if (webKg == null) return false;
-  
-  // Exakte Gleichheit ohne Toleranz
-  return Math.abs(exNum - webKg) < 1e-9;
+function withinToleranceKG(exKg, wbKg, tolPct) {
+  if (exKg == null || wbKg == null) return false;
+  const diff = Math.abs(exKg - wbKg);
+  if (!tolPct || tolPct <= 0) return diff < 1e-9; // streng
+  const tol = Math.abs(exKg) * (tolPct / 100);
+  return diff <= tol;
 }
 
-/**
- * Exakte Dimensionsvergleiche ohne Toleranz
- * Vergleicht Länge, Breite und Höhe einzeln
- */
-function compareDimensionsExact(dims1, dims2) {
-  if (!dims1 || !dims2) return false;
-  
-  const L1 = toNumber(dims1.L);
-  const B1 = toNumber(dims1.B);
-  const H1 = toNumber(dims1.H);
-  
-  const L2 = toNumber(dims2.L);
-  const B2 = toNumber(dims2.B);
-  const H2 = toNumber(dims2.H);
-  
-  // Exakte Gleichheit für jede Dimension
-  return L1 === L2 && B1 === B2 && H1 === H2;
-}
-
-/**
- * Materialklassifizierung zu Excel-Code mappen
- */
 function mapMaterialClassificationToExcel(text) {
   if (!text) return '';
   const s = String(text).toLowerCase();
@@ -156,24 +119,10 @@ function mapMaterialClassificationToExcel(text) {
   return '';
 }
 
-/**
- * N-Code normalisieren für exakte Vergleiche
- * Entfernt alle Leerzeichen und konvertiert zu Großbuchstaben
- */
+// „OHNE/N  /N  /N/N “ -> "OHNE/N/N/N/N"
 function normalizeNCode(s) {
   if (!s) return '';
   return String(s).replace(/\s+/g,'').toUpperCase();
-}
-
-/**
- * Exakte Textvergleiche ohne Normalisierung
- * Vergleicht nur nach Trim, case-sensitive
- */
-function compareTextExact(text1, text2) {
-  if (text1 == null || text2 == null) return false;
-  const t1 = String(text1).trim();
-  const t2 = String(text2).trim();
-  return t1 === t2;
 }
 
 module.exports = {
@@ -184,9 +133,7 @@ module.exports = {
   weightToKg,
   parseDimensionsToLBH,
   normPartNo,
-  compareWeightExact,
-  compareDimensionsExact,
+  withinToleranceKG,
   mapMaterialClassificationToExcel,
-  normalizeNCode,
-  compareTextExact
+  normalizeNCode
 };

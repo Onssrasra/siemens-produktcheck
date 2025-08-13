@@ -1,14 +1,12 @@
 {
-  "name": "qmp-siemens-produktcheck",
-  "version": "2.1.0",
-  "description": "QMP Siemens Produktcheck - DB vs. Web Vergleich mit Spaltenblöcken",
+  "name": "db-produktvergleich-tool",
+  "version": "2.0.1",
   "private": true,
   "engines": {
     "node": ">=18"
   },
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js",
     "install-browsers": "npx playwright install --with-deps chromium",
     "postinstall": "if [ \"$INSTALL_PLAYWRIGHT\" = \"1\" ]; then npm run install-browsers; else echo 'Skipping Playwright install (INSTALL_PLAYWRIGHT!=1)'; fi"
   },
@@ -20,15 +18,5 @@
     "exceljs": "^4.4.0",
     "cheerio": "^1.0.0-rc.12",
     "playwright": "^1.45.1"
-  },
-  "keywords": [
-    "siemens",
-    "produktcheck",
-    "excel",
-    "web-scraping",
-    "mymobase",
-    "qmp"
-  ],
-  "author": "QMP Team",
-  "license": "MIT"
+  }
 }

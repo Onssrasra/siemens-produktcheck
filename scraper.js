@@ -70,6 +70,9 @@ function mapFromInitialData(obj, a2v, url) {
     // Werkstoff extrahieren
     let werkstoff = pickTs('werkstoff') || (pickTs('material') && !pickTs('material','klass')) || 'Nicht gefunden';
 
+    // Fert./Prüfhinweis extrahieren
+    let fertPruefhinweis = pickTs('fertigungs') || pickTs('prüf') || pickTs('fertigung') || pickTs('pruef') || pickTs('hinweis') || pickTs('note') || pickTs('bemerkung') || pickTs('remark') || 'Nicht gefunden';
+
     return {
       A2V: code,
       URL: url,
@@ -79,6 +82,7 @@ function mapFromInitialData(obj, a2v, url) {
       Abmessung: abmessung,
       Werkstoff: werkstoff,
       Materialklassifizierung: materialklass,
+      FertPruefhinweis: fertPruefhinweis,
       Status: 'initialData JSON'
     };
   } catch { return null; }
@@ -128,6 +132,10 @@ class SiemensProductScraper {
       return null;
     };
     const title = ($('h1, .product-title').first().text() || $('title').first().text() || '').replace(' | MoBase','').trim();
+    
+    // Fert./Prüfhinweis extrahieren
+    const fertPruefhinweis = pick(['fertigungs']) || pick(['prüf']) || pick(['fertigung']) || pick(['pruef']) || pick(['hinweis']) || pick(['note']) || pick(['bemerkung']) || pick(['remark']) || 'Nicht gefunden';
+    
     return {
       A2V: a2v,
       URL: url,
@@ -140,6 +148,7 @@ class SiemensProductScraper {
       Abmessung: pick(['abmess']) || pick(['dimension']) || pick(['größe']) || pick(['size']) || 'Nicht gefunden',
       Werkstoff: (pick(['werkstoff']) || (pick(['material']) && !pick(['material','klass']))) || 'Nicht gefunden',
       Materialklassifizierung: pick(['material','klass']) || pick(['material','class']) || 'Nicht gefunden',
+      FertPruefhinweis: fertPruefhinweis,
       Status: 'HTTP-Parser'
     };
   }
@@ -235,6 +244,10 @@ class SiemensProductScraper {
       return null;
     };
     const title = (await page.locator('h1, .product-title').first().textContent().catch(()=>''))?.replace(' | MoBase','').trim();
+    
+    // Fert./Prüfhinweis extrahieren
+    const fertPruefhinweis = pick(['fertigungs']) || pick(['prüf']) || pick(['fertigung']) || pick(['pruef']) || pick(['hinweis']) || pick(['note']) || pick(['bemerkung']) || pick(['remark']) || 'Nicht gefunden';
+    
     await page.close();
     return {
       A2V: a2v,
@@ -246,6 +259,7 @@ class SiemensProductScraper {
       Abmessung: pick(['abmess']) || pick(['dimension']) || pick(['größe']) || pick(['size']) || 'Nicht gefunden',
       Werkstoff: (pick(['werkstoff']) || (pick(['material']) && !pick(['material','klass']))) || 'Nicht gefunden',
       Materialklassifizierung: pick(['material','klass']) || pick(['material','class']) || 'Nicht gefunden',
+      FertPruefhinweis: fertPruefhinweis,
       Status: 'Playwright'
     };
   }
@@ -260,7 +274,7 @@ class SiemensProductScraper {
     } catch (e) {
       try { out = await this.pwScrapeA2V(key); }
       catch (err) {
-        out = { A2V: key, URL: a2vUrl(key), Produkttitel:'Nicht gefunden', 'Weitere Artikelnummer':'Nicht gefunden', Abmessung:'Nicht gefunden', Gewicht:'Nicht gefunden', Werkstoff:'Nicht gefunden', Materialklassifizierung:'Nicht gefunden', Status:'Fehler: '+err.message };
+        out = { A2V: key, URL: a2vUrl(key), Produkttitel:'Nicht gefunden', 'Weitere Artikelnummer':'Nicht gefunden', Abmessung:'Nicht gefunden', Gewicht:'Nicht gefunden', Werkstoff:'Nicht gefunden', Materialklassifizierung:'Nicht gefunden', FertPruefhinweis:'Nicht gefunden', Status:'Fehler: '+err.message };
       }
     }
     this.cache.set(key, out);
