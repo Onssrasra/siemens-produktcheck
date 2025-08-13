@@ -19,211 +19,104 @@ const { SiemensProductScraper, a2vUrl } = require('./scraper');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const SCRAPE_CONCURRENCY = Number(process.env.SCRAPE_CONCURRENCY || 4);
-const WEIGHT_TOL_PCT = Number(process.env.WEIGHT_TOL_PCT || 0); // 0 = strikt
-const COLS = { Z:'Z', E:'E', C:'C', S:'S', T:'T', U:'U', V:'V', W:'W', P:'P', N:'N' };
-const HEADER_ROW = 3;
-const FIRST_DATA_ROW = 4;
+
+// Layout-Konstanten der Vorlage
+const HEADER_ROW = 3;       // Spaltennamen
+const SUBHEADER_ROW = 4;    // "DB-Wert" / "Web-Wert"
+const FIRST_DATA_ROW = 5;   // erste Datenzeile
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(__dirname));
 
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
 const scraper = new SiemensProductScraper();
 
-function fillColor(ws, addr, color) {
+// =============================
+// Hilfsfunktionen Excel
+// =============================
+function colNumberToLetter(num) {
+  let s = ''; let n = num;
+  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
+
+function addr(col, row) { return `${colNumberToLetter(col)}${row}`; }
+
+function getCellValueAsString(cell) {
+  const v = cell?.value;
+  if (v == null) return '';
+  if (typeof v === 'object' && v.text != null) return String(v.text);
+  return String(v);
+}
+
+function fillColor(ws, col, row, color) {
   if (!color) return;
   const map = {
-    green: 'FFD5F4E6',
-    red: 'FFFDEAEA',
-    orange: 'FFFFE6CC'
+    green:  'FFD5F4E6', // hellgrün
+    red:    'FFFDEAEA', // hellrot
+    orange: 'FFFFF3CD'  // hellorange
   };
-  ws.getCell(addr).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: map[color] || map.green } };
+  const a = addr(col, row);
+  ws.getCell(a).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: map[color] || map.green } };
 }
 
-// Gleichheitstests (strikt, aber mit Normalisierung)
-function eqText(a,b) {
+// Textgleichheit (robust, streng nach Normalisierung)
+function eqText(a, b) {
   if (a == null || b == null) return false;
-  const A = String(a).trim().toLowerCase().replace(/\s+/g,' ');
-  const B = String(b).trim().toLowerCase().replace(/\s+/g,' ');
+  const A = String(a).trim().toLowerCase().replace(/\s+/g, ' ');
+  const B = String(b).trim().toLowerCase().replace(/\s+/g, ' ');
   return A === B;
 }
-function eqPart(a,b) { 
-  const normA = normPartNo(a);
-  const normB = normPartNo(b);
-  const result = normA === normB;
-  console.log(`eqPart: "${a}" -> "${normA}", "${b}" -> "${normB}" -> ${result}`);
-  return result;
-}
-function eqN(a,b) { return normalizeNCode(a) === normalizeNCode(b); }
-function eqDim(exU, exV, exW, webTxt) {
-  const L = toNumber(exU), B = toNumber(exV), H = toNumber(exW);
-  const w = parseDimensionsToLBH(webTxt);
-  if (L==null || B==null || H==null || w.L==null || w.B==null || w.H==null) return false;
-  return L === w.L && B === w.B && H === w.H;
-}
-function eqWeight(exS, exT, webVal) {
+
+function eqPart(a, b) { return normPartNo(a) === normPartNo(b); }
+function eqN(a, b)     { return normalizeNCode(a) === normalizeNCode(b); }
+
+function eqWeight(exVal, exUnit, webVal) {
   const { value: wv, unit: wu } = parseWeight(webVal);
   if (wv == null) return false;
-  const exNum = toNumber(exS);
-  const exUnit = (exT||'').toString().trim().toLowerCase();
+  const exNum = toNumber(exVal);
+  const exU   = (exUnit || '').toString().trim().toLowerCase();
   if (exNum == null) return false;
-  const a = weightToKg(exNum, exUnit);
-  const b = weightToKg(wv, wu || exUnit || 'kg');
+  const a = weightToKg(exNum, exU);
+  const b = weightToKg(wv, wu || exU || 'kg');
   if (a == null || b == null) return false;
-  // strikt
-  return Math.abs(a - b) < 1e-9;
+  return Math.abs(a - b) < 1e-9; // strikt
 }
 
-// Neue Funktion: Erstelle das gewünschte Layout
-function createComparisonLayout(ws, headerRow, firstDataRow) {
-  // Zeile 4: Neue Zeile mit "DB-Wert" und "Web-Wert" nur unter den relevanten Spalten
-  // Diese Spalten bekommen eine neue Zeile 4 mit DB-Wert/Web-Wert:
-  const comparisonColumns = {
-    'C': 'D', // Materialkurztext: C=DB, D=Web
-    'E': 'F', // Her.-Artikelnummer: E=DB, F=Web  
-    'G': 'H', // Fert./Prüfhinweis: G=DB, H=Web
-    'I': 'J', // Werkstoff: I=DB, J=Web
-    'K': 'L', // Nettogewicht: K=DB, L=Web
-    'M': 'N', // Länge: M=DB, N=Web
-    'O': 'P', // Breite: O=DB, P=Web
-    'Q': 'R'  // Höhe: Q=DB, R=Web
-  };
-
-  // Neue Spalten für Web-Werte einfügen (nach den bestehenden DB-Spalten)
-  Object.entries(comparisonColumns).forEach(([dbCol, webCol]) => {
-    // Web-Spalte einfügen (nach der DB-Spalte)
-    ws.getColumn(webCol).insert(1);
-    
-    // Zeile 4: DB-Wert und Web-Wert setzen
-    ws.getCell(`${dbCol}${headerRow + 1}`).value = 'DB-Wert';
-    ws.getCell(`${webCol}${headerRow + 1}`).value = 'Web-Wert';
-    
-    // Formatierung der Unterüberschriften
-    [dbCol, webCol].forEach(col => {
-      ws.getCell(`${col}${headerRow + 1}`).alignment = { horizontal: 'center', vertical: 'middle' };
-      ws.getCell(`${col}${headerRow + 1}`).font = { bold: true, size: 12 };
-    });
-  });
-
-  // Header-Zeilen einfrieren
-  ws.views = [
-    {
-      state: 'frozen',
-      xSplit: 0,
-      ySplit: headerRow - 1
-    }
-  ];
+// =========
+// Header-Lookup: wir finden die Spalten dynamisch anhand der Vorlagen-Header (Zeile 3)
+// =========
+function findColumnByIncludes(ws, headerRow, ...needles) {
+  const lastCol = ws.columnCount || (ws.getRow(headerRow).cellCount);
+  const nls = needles.map(n => n.toLowerCase());
+  for (let c = 1; c <= lastCol; c++) {
+    const name = getCellValueAsString(ws.getCell(headerRow, c)).toLowerCase();
+    if (!name) continue;
+    const ok = nls.every(n => name.includes(n));
+    if (ok) return c;
+  }
+  return null;
 }
 
-
-
-// Neue Funktion: Setze Web-Daten und färbe entsprechend
-function setWebDataAndColor(ws, targetRow, webData, dbData, headerRow, firstDataRow) {
-  // Web-Daten in die entsprechenden Spalten setzen und einfärben
-  
-  // Materialkurztext (Web) - Spalte D
-  if (webData.Produkttitel && webData.Produkttitel !== 'Nicht gefunden') {
-    ws.getCell(`D${targetRow}`).value = webData.Produkttitel;
-    const color = eqText(dbData.materialkurztext, webData.Produkttitel) ? 'green' : 'red';
-    fillColor(ws, `D${targetRow}`, color);
-  } else {
-    fillColor(ws, `D${targetRow}`, 'orange');
+function ensureSubheaders(ws, pairs) {
+  // Nur die Paare markieren: links DB-Wert, rechts Web-Wert; Rest leer lassen
+  for (const { dbCol, webCol } of pairs) {
+    if (!dbCol || !webCol) continue;
+    const dbAddr  = addr(dbCol, SUBHEADER_ROW);
+    const webAddr = addr(webCol, SUBHEADER_ROW);
+    if (!ws.getCell(dbAddr).value)  ws.getCell(dbAddr).value  = 'DB-Wert';
+    if (!ws.getCell(webAddr).value) ws.getCell(webAddr).value = 'Web-Wert';
   }
-
-  // Her.-Artikelnummer (Web) - Spalte F
-  if (webData['Weitere Artikelnummer'] && webData['Weitere Artikelnummer'] !== 'Nicht gefunden') {
-    ws.getCell(`F${targetRow}`).value = webData['Weitere Artikelnummer'];
-    const color = eqPart(dbData.artikelnummer, webData['Weitere Artikelnummer']) ? 'green' : 'red';
-    fillColor(ws, `F${targetRow}`, color);
-  } else {
-    fillColor(ws, `F${targetRow}`, 'orange');
-  }
-
-  // Fert./Prüfhinweis (Web) - Spalte H
-  if (webData.FertPruefhinweis && webData.FertPruefhinweis !== 'Nicht gefunden') {
-    ws.getCell(`H${targetRow}`).value = webData.FertPruefhinweis;
-    const color = eqText(dbData.fertPruefhinweis, webData.FertPruefhinweis) ? 'green' : 'red';
-    fillColor(ws, `H${targetRow}`, color);
-  } else {
-    fillColor(ws, `H${targetRow}`, 'orange');
-  }
-
-  // Werkstoff (Web) - Spalte J
-  if (webData.Werkstoff && webData.Werkstoff !== 'Nicht gefunden') {
-    ws.getCell(`J${targetRow}`).value = webData.Werkstoff;
-    const color = eqText(dbData.werkstoff, webData.Werkstoff) ? 'green' : 'red';
-    fillColor(ws, `J${targetRow}`, color);
-  } else {
-    fillColor(ws, `J${targetRow}`, 'orange');
-  }
-
-  // Nettogewicht (Web) - Spalte L
-  if (webData.Gewicht && webData.Gewicht !== 'Nicht gefunden') {
-    const { value, unit } = parseWeight(webData.Gewicht);
-    if (value != null) {
-      ws.getCell(`L${targetRow}`).value = value;
-      const color = eqWeight(dbData.nettogewicht, dbData.gewichtEinheit, webData.Gewicht) ? 'green' : 'red';
-      fillColor(ws, `L${targetRow}`, color);
-    } else {
-      fillColor(ws, `L${targetRow}`, 'orange');
-    }
-  } else {
-    fillColor(ws, `L${targetRow}`, 'orange');
-  }
-
-  // Abmessungen (Web)
-  if (webData.Abmessung && webData.Abmessung !== 'Nicht gefunden') {
-    const dims = parseDimensionsToLBH(webData.Abmessung);
-    
-    // Länge (Web) - Spalte N
-    if (dims.L != null) {
-      ws.getCell(`N${targetRow}`).value = dims.L;
-      const color = (dbData.laenge != null && dbData.laenge === dims.L) ? 'green' : 'red';
-      fillColor(ws, `N${targetRow}`, color);
-    } else {
-      fillColor(ws, `N${targetRow}`, 'orange');
-    }
-    
-    // Breite (Web) - Spalte P
-    if (dims.B != null) {
-      ws.getCell(`P${targetRow}`).value = dims.B;
-      const color = (dbData.breite != null && dbData.breite === dims.B) ? 'green' : 'red';
-      fillColor(ws, `P${targetRow}`, color);
-    } else {
-      fillColor(ws, `P${targetRow}`, 'orange');
-    }
-    
-    // Höhe (Web) - Spalte R
-    if (dims.H != null) {
-      ws.getCell(`R${targetRow}`).value = dims.H;
-      const color = (dbData.hoehe != null && dbData.hoehe === dims.H) ? 'green' : 'red';
-      fillColor(ws, `R${targetRow}`, color);
-    } else {
-      fillColor(ws, `R${targetRow}`, 'orange');
-    }
-  } else {
-    // Alle Abmessungen orange markieren wenn nicht gefunden
-    ['N', 'P', 'R'].forEach(col => {
-      fillColor(ws, `${col}${targetRow}`, 'orange');
-    });
-  }
-
-  // Debug-Logging
-  console.log(`Row ${targetRow}: Web data processed for A2V ${webData.A2V || 'unknown'}`);
-  console.log(`  - Produkttitel: ${webData.Produkttitel || 'Nicht gefunden'}`);
-  console.log(`  - Weitere Artikelnummer: ${webData['Weitere Artikelnummer'] || 'Nicht gefunden'}`);
-  console.log(`  - FertPruefhinweis: ${webData.FertPruefhinweis || 'Nicht gefunden'}`);
-  console.log(`  - Werkstoff: ${webData.Werkstoff || 'Nicht gefunden'}`);
-  console.log(`  - Gewicht: ${webData.Gewicht || 'Nicht gefunden'}`);
-  console.log(`  - Abmessung: ${webData.Abmessung || 'Nicht gefunden'}`);
 }
 
+// =============================
 // Routes
+// =============================
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
-
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 app.post('/api/process-excel', upload.single('file'), async (req, res) => {
   try {
@@ -232,73 +125,160 @@ app.post('/api/process-excel', upload.single('file'), async (req, res) => {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(req.file.buffer);
 
-    // Das erste Arbeitsblatt verwenden (nicht neu erstellen)
-    const ws = wb.getWorksheet(1);
-    if (!ws) {
-      return res.status(400).json({ error: 'Kein Arbeitsblatt in der Excel-Datei gefunden.' });
-    }
+    // Wir verarbeiten alle Tabellenblätter
+    for (const ws of wb.worksheets) {
+      // 1) Spalten dynamisch anhand Kopfzeile (Zeile 3) finden
+      const col = {};
+      col.materialkurz = findColumnByIncludes(ws, HEADER_ROW, 'material', 'kurz');        // C erwartet
+      col.herstArtNr   = findColumnByIncludes(ws, HEADER_ROW, 'hersteller', 'artikel');   // E erwartet
+      col.fertPruef    = findColumnByIncludes(ws, HEADER_ROW, 'fertigung', 'prüf');       // N erwartet
+      if (!col.fertPruef) col.fertPruef = findColumnByIncludes(ws, HEADER_ROW, 'fertigung', 'pruef');
+      col.werkstoff    = findColumnByIncludes(ws, HEADER_ROW, 'werkstoff');               // P erwartet
+      col.nettogew     = findColumnByIncludes(ws, HEADER_ROW, 'netto');                   // S erwartet
+      col.nGewEinheit  = findColumnByIncludes(ws, HEADER_ROW, 'gewicht', 'einheit') || null; // optional
+      col.laenge       = findColumnByIncludes(ws, HEADER_ROW, 'länge') || findColumnByIncludes(ws, HEADER_ROW, 'laenge'); // U erwartet
+      col.breite       = findColumnByIncludes(ws, HEADER_ROW, 'breite');                  // V erwartet
+      col.hoehe        = findColumnByIncludes(ws, HEADER_ROW, 'höhe') || findColumnByIncludes(ws, HEADER_ROW, 'hoehe');   // W erwartet
 
-    // Layout anpassen (neue Zeile 4 mit DB-Wert/Web-Wert hinzufügen)
-    createComparisonLayout(ws, HEADER_ROW, FIRST_DATA_ROW);
-
-    // 1) A2V-Nummern aus Spalte Z ab Zeile 4 einsammeln
-    const tasks = [];
-    const prodRows = [];
-    const last = ws.lastRow?.number || 0;
-    for (let r = FIRST_DATA_ROW; r <= last; r++) {
-      const a2v = (ws.getCell(`${COLS.Z}${r}`).value || '').toString().trim().toUpperCase();
-      if (a2v.startsWith('A2V')) {
-        prodRows.push(r);
-        tasks.push(a2v);
+      // A2V-Spalte (in der Vorlage meist "Siemens Mobility Materialnummer (A2V)")
+      col.a2v = findColumnByIncludes(ws, HEADER_ROW, 'a2v')
+             || findColumnByIncludes(ws, HEADER_ROW, 'siemens', 'materialnummer')
+             || findColumnByIncludes(ws, HEADER_ROW, 'materialnummer')
+             || null;
+      // Fallback: bekannte Positionen (AH, Z)
+      if (!col.a2v) {
+        // AH ~ 34
+        col.a2v = 34; // AH
       }
-    }
 
-    // 2) Scrapen
-    const resultsMap = await scraper.scrapeMany(tasks, SCRAPE_CONCURRENCY);
+      // Für jede der relevanten DB-Spalten die direkte Web-Nachbarspalte
+      const pairs = [];
+      function addPair(dbCol) { if (dbCol) pairs.push({ dbCol, webCol: dbCol + 1 }); }
+      addPair(col.materialkurz);
+      addPair(col.herstArtNr);
+      addPair(col.fertPruef);
+      addPair(col.werkstoff);
+      addPair(col.nettogew);
+      addPair(col.laenge);
+      addPair(col.breite);
+      addPair(col.hoehe);
 
-    // 3) Alle Datenzeilen nach unten verschieben (wegen der neuen Zeile 4)
-    // Zuerst alle Zeilen ab Zeile 5 nach unten verschieben
-    for (let r = last; r >= FIRST_DATA_ROW; r--) {
-      // Alle Spalten von A bis Z kopieren
-      for (let col = 'A'; col <= 'Z'; col++) {
-        const sourceCell = ws.getCell(`${col}${r}`);
-        if (sourceCell.value != null) {
-          ws.getCell(`${col}${r + 1}`).value = sourceCell.value;
-          // Ursprüngliche Zelle leeren
-          ws.getCell(`${col}${r}`).value = null;
+      // 2) Subheader "DB-Wert" / "Web-Wert" in Zeile 4 setzen (nur für obige Paare)
+      ensureSubheaders(ws, pairs);
+
+      // 3) A2V-Werte einsammeln (ab Zeile 5)
+      const last = ws.lastRow?.number || 0;
+      const rowsToProcess = [];
+      const lookups = [];
+      for (let r = FIRST_DATA_ROW; r <= last; r++) {
+        const a2vCell = ws.getCell(r, col.a2v);
+        const a2vVal = getCellValueAsString(a2vCell).trim().toUpperCase();
+        if (a2vVal.startsWith('A2V')) {
+          rowsToProcess.push(r);
+          lookups.push(a2vVal);
         }
       }
-    }
 
-    // 4) Web-Daten in die entsprechenden Web-Spalten eintragen
-    for (const sourceRow of prodRows) {
-      try {
-        const a2v = (ws.getCell(`${COLS.Z}${sourceRow + 1}`).value || '').toString().trim().toUpperCase();
-        const webData = resultsMap.get(a2v) || {};
+      // 4) Scrapen (gebündelt)
+      const resultsMap = await scraper.scrapeMany(lookups, SCRAPE_CONCURRENCY);
 
-        // DB-Daten aus der verschobenen Zeile extrahieren
-        const dbData = {
-          materialkurztext: ws.getCell(`${COLS.C}${sourceRow + 1}`).value,
-          artikelnummer: ws.getCell(`${COLS.E}${sourceRow + 1}`).value,
-          fertPruefhinweis: ws.getCell(`${COLS.N}${sourceRow + 1}`).value,
-          werkstoff: ws.getCell(`${COLS.P}${sourceRow + 1}`).value,
-          nettogewicht: ws.getCell(`${COLS.S}${sourceRow + 1}`).value,
-          gewichtEinheit: ws.getCell(`${COLS.T}${sourceRow + 1}`).value,
-          laenge: ws.getCell(`${COLS.U}${sourceRow + 1}`).value,
-          breite: ws.getCell(`${COLS.V}${sourceRow + 1}`).value,
-          hoehe: ws.getCell(`${COLS.W}${sourceRow + 1}`).value
+      // 5) Pro Zeile Web-Daten in die Nachbarspalte schreiben (kein Zeileneinfügen!)
+      for (const r of rowsToProcess) {
+        const a2v = getCellValueAsString(ws.getCell(r, col.a2v)).trim().toUpperCase();
+        const web = resultsMap.get(a2v) || {};
+
+        // Excel-DB-Werte einsammeln
+        const db = {
+          materialkurz: ws.getCell(r, col.materialkurz)?.value,
+          herstArtNr:   ws.getCell(r, col.herstArtNr)?.value,
+          fertPruef:    ws.getCell(r, col.fertPruef)?.value,
+          werkstoff:    ws.getCell(r, col.werkstoff)?.value,
+          nettogew:     ws.getCell(r, col.nettogew)?.value,
+          nGewEinheit:  col.nGewEinheit ? ws.getCell(r, col.nGewEinheit)?.value : '',
+          laenge:       ws.getCell(r, col.laenge)?.value,
+          breite:       ws.getCell(r, col.breite)?.value,
+          hoehe:        ws.getCell(r, col.hoehe)?.value
         };
 
-        console.log(`Processing row ${sourceRow + 1} with A2V: ${a2v}`);
-        console.log(`DB data:`, dbData);
+        // 5.1 Materialkurztext (Produkttitel als Proxy)
+        if (col.materialkurz) {
+          const webVal = (web.Produkttitel && web.Produkttitel !== 'Nicht gefunden') ? web.Produkttitel : '';
+          const c = col.materialkurz + 1;
+          if (webVal) ws.getCell(r, c).value = webVal;
+          if (!webVal) fillColor(ws, c, r, 'orange');
+          else fillColor(ws, c, r, eqText(db.materialkurz || '', webVal) ? 'green' : 'red');
+        }
 
-        // Web-Daten setzen und einfärben
-        setWebDataAndColor(ws, sourceRow + 1, webData, dbData);
+        // 5.2 Hersteller-Artikelnummer ("Weitere Artikelnummer" oder A2V als Fallback)
+        if (col.herstArtNr) {
+          let webVal = (web['Weitere Artikelnummer'] && web['Weitere Artikelnummer'] !== 'Nicht gefunden') ? web['Weitere Artikelnummer'] : '';
+          if (!webVal && a2v) webVal = a2v;
+          const c = col.herstArtNr + 1;
+          if (webVal) ws.getCell(r, c).value = webVal;
+          if (!webVal) fillColor(ws, c, r, 'orange');
+          else {
+            const excelVal = db.herstArtNr || a2v;
+            fillColor(ws, c, r, eqPart(excelVal, webVal) ? 'green' : 'red');
+          }
+        }
 
-      } catch (error) {
-        console.error(`Error processing row ${sourceRow + 1}:`, error);
-        // Fehlerzeile überspringen und weitermachen
-        continue;
+        // 5.3 Fertigung/Prüf-Nachweis (aus Materialklassifizierung gemappt)
+        if (col.fertPruef) {
+          const code = normalizeNCode(mapMaterialClassificationToExcel(web.Materialklassifizierung || ''));
+          const c = col.fertPruef + 1;
+          if (code) ws.getCell(r, c).value = code;
+          if (!code) fillColor(ws, c, r, 'orange');
+          else fillColor(ws, c, r, eqN(db.fertPruef || '', code) ? 'green' : 'red');
+        }
+
+        // 5.4 Werkstoff
+        if (col.werkstoff) {
+          const webVal = (web.Werkstoff && web.Werkstoff !== 'Nicht gefunden') ? web.Werkstoff : '';
+          const c = col.werkstoff + 1;
+          if (webVal) ws.getCell(r, c).value = webVal;
+          if (!webVal) fillColor(ws, c, r, 'orange');
+          else fillColor(ws, c, r, eqText(db.werkstoff || '', webVal) ? 'green' : 'red');
+        }
+
+        // 5.5 Nettogewicht (Wert + Einheit im Vergleich; Web-Wert in die Nachbarspalte schreiben)
+        if (col.nettogew) {
+          const c = col.nettogew + 1;
+          const webVal = (web.Gewicht && web.Gewicht !== 'Nicht gefunden') ? web.Gewicht : '';
+          if (webVal) {
+            const { value, unit } = parseWeight(webVal);
+            if (value != null) ws.getCell(r, c).value = value; else ws.getCell(r, c).value = webVal; // falls keine Zahl parsebar
+            // Einheit in DB-Einheitsspalte belassen/ergänzen, falls vorhanden
+            if (unit && col.nGewEinheit && !ws.getCell(r, col.nGewEinheit).value) ws.getCell(r, col.nGewEinheit).value = unit;
+            const ok = eqWeight(db.nettogew, db.nGewEinheit, webVal);
+            fillColor(ws, c, r, ok ? 'green' : 'red');
+          } else {
+            fillColor(ws, c, r, 'orange');
+          }
+        }
+
+        // 5.6 Abmessungen L/B/H (Web → Nachbarspalte, Vergleich gegen DB)
+        const dims = (web.Abmessung && web.Abmessung !== 'Nicht gefunden') ? parseDimensionsToLBH(web.Abmessung) : { L:null, B:null, H:null };
+        // Länge
+        if (col.laenge) {
+          const c = col.laenge + 1;
+          if (dims.L != null) ws.getCell(r, c).value = dims.L;
+          if (toNumber(db.laenge) != null && dims.L != null) fillColor(ws, c, r, toNumber(db.laenge) === dims.L ? 'green' : 'red');
+          else if (dims.L == null) fillColor(ws, c, r, 'orange');
+        }
+        // Breite
+        if (col.breite) {
+          const c = col.breite + 1;
+          if (dims.B != null) ws.getCell(r, c).value = dims.B;
+          if (toNumber(db.breite) != null && dims.B != null) fillColor(ws, c, r, toNumber(db.breite) === dims.B ? 'green' : 'red');
+          else if (dims.B == null) fillColor(ws, c, r, 'orange');
+        }
+        // Höhe
+        if (col.hoehe) {
+          const c = col.hoehe + 1;
+          if (dims.H != null) ws.getCell(r, c).value = dims.H;
+          if (toNumber(db.hoehe) != null && dims.H != null) fillColor(ws, c, r, toNumber(db.hoehe) === dims.H ? 'green' : 'red');
+          else if (dims.H == null) fillColor(ws, c, r, 'orange');
+        }
       }
     }
 
