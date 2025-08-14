@@ -121,9 +121,11 @@ function calculateNewColumnStructure(ws) {
 function fillColor(ws, addr, color) {
   if (!color) return;
   const map = {
-    green: 'FFD5F4E6',  // Hellgrün für übereinstimmende Werte
-    red:   'FFFDEAEA',  // Hellrot für unterschiedliche Werte
-    orange: 'FFFFEAA7'  // Orange für fehlende Werte
+    green: 'FFD5F4E6',   // Hellgrün für übereinstimmende Werte
+    red:   'FFFDEAEA',   // Hellrot für unterschiedliche Werte
+    orange: 'FFFFEAA7',  // Orange für fehlende Werte
+    dbBlue: 'FFE6F3FF',  // Hellblau für DB-Wert Label
+    webBlue: 'FFCCE7FF'  // Noch helleres Blau für Web-Wert Label
   };
   ws.getCell(addr).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: map[color] || map.green } };
 }
@@ -153,7 +155,36 @@ function copyColumnFormatting(ws, fromCol, toCol, rowStart, rowEnd) {
   }
 }
 
-// Gleichheitstests (strikt, aber mit Normalisierung)
+function applyLabelCellFormatting(ws, addr, isWebCell = false) {
+  const cell = ws.getCell(addr);
+  
+  // Hintergrundfarbe
+  fillColor(ws, addr, isWebCell ? 'webBlue' : 'dbBlue');
+  
+  // Rahmen
+  cell.border = {
+    top: { style: 'thin' },
+    left: { style: 'thin' },
+    bottom: { style: 'thin' },
+    right: { style: 'thin' }
+  };
+  
+  // Schriftformatierung
+  cell.font = {
+    bold: true,
+    size: 10
+  };
+  
+  // Zentrierte Ausrichtung
+  cell.alignment = {
+    horizontal: 'center',
+    vertical: 'middle'
+  };
+}
+
+function hasValue(value) {
+  return value !== null && value !== undefined && value !== '' && String(value).trim() !== '';
+}
 function eqText(a,b) {
   if (a == null || b == null) return false;
   const A = String(a).trim().toLowerCase().replace(/\s+/g,' ');
@@ -257,9 +288,13 @@ app.post('/api/process-excel', upload.single('file'), async (req, res) => {
         // Formatierung von DB-Spalte auf Web-Spalte kopieren (Zeilen 1-3)
         copyColumnFormatting(ws, pair.dbCol, pair.webCol, 1, 3);
         
-        // Label-Zeile befüllen
+        // Label-Zeile befüllen mit Formatierung
         ws.getCell(`${pair.dbCol}${LABEL_ROW}`).value = 'DB-Wert';
         ws.getCell(`${pair.webCol}${LABEL_ROW}`).value = 'Web-Wert';
+        
+        // Spezielle Formatierung für Label-Zeile
+        applyLabelCellFormatting(ws, `${pair.dbCol}${LABEL_ROW}`, false); // DB-Blau
+        applyLabelCellFormatting(ws, `${pair.webCol}${LABEL_ROW}`, true);  // Web-Blau (heller)
         
         console.log(`Set labels for ${pair.label}: ${pair.dbCol} (DB-Wert), ${pair.webCol} (Web-Wert)`);
       }
@@ -356,21 +391,32 @@ app.post('/api/process-excel', upload.single('file'), async (req, res) => {
               break;
           }
           
-          // Web-Wert eintragen falls vorhanden
-          if (webValue !== null) {
+          // Farblogik basierend auf Verfügbarkeit der Werte
+          const hasDbValue = hasValue(dbValue);
+          const hasWebValue = webValue !== null;
+          
+          if (hasWebValue) {
+            // Web-Wert vorhanden
             ws.getCell(`${pair.webCol}${currentRow}`).value = webValue;
             
-            // Farbkodierung NUR für Web-Spalte
-            const color = isEqual ? 'green' : 'red';
-            fillColor(ws, `${pair.webCol}${currentRow}`, color);
-            
-            console.log(`${pair.label}: DB="${dbValue}" vs Web="${webValue}" -> ${isEqual ? 'EQUAL' : 'DIFFERENT'}`);
+            if (hasDbValue) {
+              // Beide Werte vorhanden - vergleichen
+              const color = isEqual ? 'green' : 'red';
+              fillColor(ws, `${pair.webCol}${currentRow}`, color);
+              console.log(`${pair.label}: DB="${dbValue}" vs Web="${webValue}" -> ${isEqual ? 'EQUAL' : 'DIFFERENT'}`);
+            } else {
+              // Nur Web-Wert vorhanden, DB-Wert fehlt - orange
+              fillColor(ws, `${pair.webCol}${currentRow}`, 'orange');
+              console.log(`${pair.label}: DB=MISSING vs Web="${webValue}" -> ORANGE`);
+            }
           } else {
-            // Kein Web-Wert verfügbar - orange markieren wenn DB-Wert vorhanden ist
-            if (dbValue !== null && dbValue !== undefined && dbValue !== '') {
+            // Kein Web-Wert verfügbar
+            if (hasDbValue) {
+              // Nur DB-Wert vorhanden, Web-Wert fehlt - orange
               fillColor(ws, `${pair.webCol}${currentRow}`, 'orange');
               console.log(`${pair.label}: DB="${dbValue}" vs Web=MISSING -> ORANGE`);
             }
+            // Wenn beide fehlen, keine Markierung
           }
         }
       }
