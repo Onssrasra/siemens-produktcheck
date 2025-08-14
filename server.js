@@ -121,10 +121,36 @@ function calculateNewColumnStructure(ws) {
 function fillColor(ws, addr, color) {
   if (!color) return;
   const map = {
-    green: 'FFD5F4E6',
-    red:   'FFFDEAEA'
+    green: 'FFD5F4E6',  // Hellgrün für übereinstimmende Werte
+    red:   'FFFDEAEA',  // Hellrot für unterschiedliche Werte
+    orange: 'FFFFEAA7'  // Orange für fehlende Werte
   };
   ws.getCell(addr).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: map[color] || map.green } };
+}
+
+function copyColumnFormatting(ws, fromCol, toCol, rowStart, rowEnd) {
+  for (let row = rowStart; row <= rowEnd; row++) {
+    const fromCell = ws.getCell(`${fromCol}${row}`);
+    const toCell = ws.getCell(`${toCol}${row}`);
+    
+    // Kopiere Formatierung
+    if (fromCell.fill) {
+      toCell.fill = fromCell.fill;
+    }
+    if (fromCell.font) {
+      toCell.font = fromCell.font;
+    }
+    if (fromCell.border) {
+      toCell.border = fromCell.border;
+    }
+    if (fromCell.alignment) {
+      toCell.alignment = fromCell.alignment;
+    }
+    if (fromCell.style) {
+      // Kopiere andere Style-Eigenschaften
+      Object.assign(toCell.style, fromCell.style);
+    }
+  }
 }
 
 // Gleichheitstests (strikt, aber mit Normalisierung)
@@ -227,6 +253,9 @@ app.post('/api/process-excel', upload.single('file'), async (req, res) => {
         // In Web-Spalte duplizieren
         ws.getCell(`${pair.webCol}2`).value = dbTechCode;
         ws.getCell(`${pair.webCol}3`).value = dbKlartext;
+        
+        // Formatierung von DB-Spalte auf Web-Spalte kopieren (Zeilen 1-3)
+        copyColumnFormatting(ws, pair.dbCol, pair.webCol, 1, 3);
         
         // Label-Zeile befüllen
         ws.getCell(`${pair.dbCol}${LABEL_ROW}`).value = 'DB-Wert';
@@ -331,12 +360,17 @@ app.post('/api/process-excel', upload.single('file'), async (req, res) => {
           if (webValue !== null) {
             ws.getCell(`${pair.webCol}${currentRow}`).value = webValue;
             
-            // Farbkodierung für beide Spalten des Paares
+            // Farbkodierung NUR für Web-Spalte
             const color = isEqual ? 'green' : 'red';
-            fillColor(ws, `${pair.dbCol}${currentRow}`, color);
             fillColor(ws, `${pair.webCol}${currentRow}`, color);
             
             console.log(`${pair.label}: DB="${dbValue}" vs Web="${webValue}" -> ${isEqual ? 'EQUAL' : 'DIFFERENT'}`);
+          } else {
+            // Kein Web-Wert verfügbar - orange markieren wenn DB-Wert vorhanden ist
+            if (dbValue !== null && dbValue !== undefined && dbValue !== '') {
+              fillColor(ws, `${pair.webCol}${currentRow}`, 'orange');
+              console.log(`${pair.label}: DB="${dbValue}" vs Web=MISSING -> ORANGE`);
+            }
           }
         }
       }
