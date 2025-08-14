@@ -1,4 +1,3 @@
-
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -15,219 +14,343 @@ const {
   mapMaterialClassificationToExcel,
   normalizeNCode
 } = require('./utils');
-const { SiemensProductScraper } = require('./scraper');
+const { SiemensProductScraper, a2vUrl } = require('./scraper');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const SCRAPE_CONCURRENCY = Number(process.env.SCRAPE_CONCURRENCY || 4);
+const WEIGHT_TOL_PCT = Number(process.env.WEIGHT_TOL_PCT || 0); // 0 = strikt
 
-// Vorlage-Layout
-const HEADER_ROW = 3;      // Spalten-Namen
-const SUBHEADER_ROW = 4;   // DB-Wert / Web-Wert
-const FIRST_DATA_ROW = 5;  // erste Datenzeile
+// Ursprüngliche Spalten-Definition
+const ORIGINAL_COLS = { Z:'Z', E:'E', C:'C', S:'S', T:'T', U:'U', V:'V', W:'W', P:'P', N:'N' };
+
+// DB/Web-Spaltenpaare - hier definieren wir welche Spalten DB/Web-Paare bekommen
+const DB_WEB_PAIRS = [
+  { original: 'C', dbCol: null, webCol: null, label: 'Material-Kurztext' },
+  { original: 'E', dbCol: null, webCol: null, label: 'Herstellartikelnummer' },
+  { original: 'N', dbCol: null, webCol: null, label: 'Fert./Prüfhinweis' },
+  { original: 'P', dbCol: null, webCol: null, label: 'Werkstoff' },
+  { original: 'S', dbCol: null, webCol: null, label: 'Nettogewicht' },
+  { original: 'U', dbCol: null, webCol: null, label: 'Länge' },
+  { original: 'V', dbCol: null, webCol: null, label: 'Breite' },
+  { original: 'W', dbCol: null, webCol: null, label: 'Höhe' }
+];
+
+const HEADER_ROW = 3;
+const LABEL_ROW = 4; // Neue Zeile für "DB-Wert"/"Web-Wert" Labels
+const FIRST_DATA_ROW = 5; // Daten beginnen jetzt ab Zeile 5
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(__dirname));
 
+const scraper = new SiemensProductScraper();
+
+// Funktion um Spaltenbuchstaben zu berechnen (A, B, C, ... Z, AA, AB, ...)
+function getColumnLetter(index) {
+  let result = '';
+  while (index > 0) {
+    index--;
+    result = String.fromCharCode(65 + (index % 26)) + result;
+    index = Math.floor(index / 26);
+  }
+  return result;
+}
+
+// Funktion um Spaltenindex aus Buchstaben zu berechnen
+function getColumnIndex(letter) {
+  let index = 0;
+  for (let i = 0; i < letter.length; i++) {
+    index = index * 26 + (letter.charCodeAt(i) - 64);
+  }
+  return index;
+}
+
+// Funktion um neue Spaltenstruktur zu berechnen
+function calculateNewColumnStructure(ws) {
+  const newStructure = {
+    pairs: [],
+    otherCols: new Map(),
+    totalInsertedCols: 0
+  };
+  
+  let insertedCols = 0;
+  
+  // Für jedes DB/Web-Paar
+  for (const pair of DB_WEB_PAIRS) {
+    const originalIndex = getColumnIndex(pair.original);
+    const adjustedOriginalIndex = originalIndex + insertedCols;
+    
+    pair.dbCol = getColumnLetter(adjustedOriginalIndex);
+    pair.webCol = getColumnLetter(adjustedOriginalIndex + 1);
+    
+    newStructure.pairs.push(pair);
+    insertedCols++;
+  }
+  
+  newStructure.totalInsertedCols = insertedCols;
+  
+  // Andere Spalten (die nicht in DB/Web-Paaren sind) anpassen
+  const lastRow = ws.lastRow?.number || 0;
+  const lastCol = ws.lastColumn?.number || 0;
+  
+  for (let colIndex = 1; colIndex <= lastCol; colIndex++) {
+    const originalLetter = getColumnLetter(colIndex);
+    
+    // Prüfen ob diese Spalte ein DB/Web-Paar ist
+    const isPairColumn = DB_WEB_PAIRS.some(pair => pair.original === originalLetter);
+    
+    if (!isPairColumn) {
+      // Berechnen wie viele Spalten vor dieser Spalte eingefügt wurden
+      let insertedBefore = 0;
+      for (const pair of DB_WEB_PAIRS) {
+        if (getColumnIndex(pair.original) < colIndex) {
+          insertedBefore++;
+        }
+      }
+      
+      const newLetter = getColumnLetter(colIndex + insertedBefore);
+      newStructure.otherCols.set(originalLetter, newLetter);
+    }
+  }
+  
+  return newStructure;
+}
+
+function fillColor(ws, addr, color) {
+  if (!color) return;
+  const map = {
+    green: 'FFD5F4E6',
+    red:   'FFFDEAEA'
+  };
+  ws.getCell(addr).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: map[color] || map.green } };
+}
+
+// Gleichheitstests (strikt, aber mit Normalisierung)
+function eqText(a,b) {
+  if (a == null || b == null) return false;
+  const A = String(a).trim().toLowerCase().replace(/\s+/g,' ');
+  const B = String(b).trim().toLowerCase().replace(/\s+/g,' ');
+  return A === B;
+}
+function eqPart(a,b) { 
+  const normA = normPartNo(a);
+  const normB = normPartNo(b);
+  const result = normA === normB;
+  console.log(`eqPart: "${a}" -> "${normA}", "${b}" -> "${normB}" -> ${result}`);
+  return result;
+}
+function eqN(a,b) { return normalizeNCode(a) === normalizeNCode(b); }
+function eqWeight(exS, webVal) {
+  const { value: wv } = parseWeight(webVal);
+  if (wv == null) return false;
+  const exNum = toNumber(exS);
+  if (exNum == null) return false;
+  return Math.abs(exNum - wv) < 1e-9;
+}
+function eqDimension(exVal, webDimText, dimType) {
+  const exNum = toNumber(exVal);
+  const webDim = parseDimensionsToLBH(webDimText);
+  if (exNum == null) return false;
+  
+  let webVal = null;
+  if (dimType === 'L') webVal = webDim.L;
+  else if (dimType === 'B') webVal = webDim.B;
+  else if (dimType === 'H') webVal = webDim.H;
+  
+  if (webVal == null) return false;
+  return exNum === webVal;
+}
+
+// Routes
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
-// ===== Helpers
-function colLetterToIndex(letter) {
-  let n = 0; for (let i = 0; i < letter.length; i++) n = n * 26 + (letter.charCodeAt(i) - 64); return n;
-}
-function colIndexToLetter(idx) {
-  let s = ''; let n = idx; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s;
-}
-function addr(c, r) { return `${colIndexToLetter(c)}${r}`; }
-function getStr(val) { if (val == null) return ''; if (typeof val === 'object' && val.text != null) return String(val.text); return String(val); }
-function fillColor(ws, col, row, color) {
-  if (!color) return; const map = { green: 'FFD5F4E6', red: 'FFFDEAEA', orange: 'FFFFF3CD' };
-  ws.getCell(addr(col, row)).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: map[color] || map.green } };
-}
-function eqText(a, b) { const A = getStr(a).trim().toLowerCase().replace(/\s+/g,' '); const B = getStr(b).trim().toLowerCase().replace(/\s+/g,' '); return !!A && !!B && A===B; }
-function eqPart(a,b){ return normPartNo(a)===normPartNo(b); }
-function eqN(a,b){ return normalizeNCode(a)===normalizeNCode(b); }
-function eqWeight(exVal, exUnit, webVal){ const { value:wv, unit:wu } = parseWeight(webVal); if (wv==null) return false; const exNum = toNumber(exVal); if (exNum==null) return false; const exU=(getStr(exUnit)||'').toLowerCase(); const a=weightToKg(exNum, exU); const b=weightToKg(wv, wu||exU||'kg'); return a!=null && b!=null && Math.abs(a-b)<1e-9; }
-
-// Zielspalten gemäß Vorlage (fix)
-const TGT = {
-  MAT_DB:  colLetterToIndex('C'), MAT_WEB: colLetterToIndex('D'),
-  PART_DB: colLetterToIndex('F'), PART_WEB: colLetterToIndex('G'),
-  PRF_DB:  colLetterToIndex('P'), PRF_WEB: colLetterToIndex('Q'),
-  WERK_DB: colLetterToIndex('S'), WERK_WEB: colLetterToIndex('T'),
-  NET_DB:  colLetterToIndex('W'), NET_WEB: colLetterToIndex('X'), NET_UNIT: colLetterToIndex('Y'),
-  L_DB:    colLetterToIndex('Z'), L_WEB:   colLetterToIndex('AA'),
-  B_DB:    colLetterToIndex('AB'),B_WEB:   colLetterToIndex('AC'),
-  H_DB:    colLetterToIndex('AD'),H_WEB:   colLetterToIndex('AE'),
-  DIM_UNIT:colLetterToIndex('AF'),
-  A2V:     colLetterToIndex('AH')
-};
-
-function findColumnByIncludes(ws, headerRow, ...needles) {
-  const row = ws.getRow(headerRow);
-  const lastCol = Math.max(ws.actualColumnCount||0, row.actualCellCount||0, row.cellCount||0, 60);
-  const nls = needles.map(n=>n.toLowerCase());
-  for (let c=1;c<=lastCol;c++){
-    const name = getStr(row.getCell(c).value).toLowerCase();
-    if (!name) continue; if (nls.every(n=>name.includes(n))) return c;
-  }
-  return null;
-}
-
-function ensureRow4OnlySubheaders(ws, pairs){
-  const usedCols = Math.max(ws.actualColumnCount||0, ws.getRow(HEADER_ROW).cellCount||0, 60);
-  // 1) Daten in Row4 nach Row5 verschieben, falls vorhanden (ausser DB/Web Titel)
-  const allowed = new Set();
-  for (const p of pairs){ allowed.add(p.db); allowed.add(p.web); }
-  const row4 = ws.getRow(SUBHEADER_ROW);
-  let hasDataInRow4 = false;
-  const r4Values = [];
-  for (let c=1;c<=usedCols;c++){
-    const v = row4.getCell(c).value;
-    const isAllowedTitle = (v==='DB-Wert' && allowed.has(c)) || (v==='Web-Wert' && allowed.has(c));
-    if (v!=null && v!=='' && !isAllowedTitle){ hasDataInRow4 = true; }
-    r4Values[c] = v;
-  }
-  if (hasDataInRow4){
-    // Insert a new row 5 to make space, then copy row4 data to row5
-    ws.spliceRows(FIRST_DATA_ROW, 0, []);
-    const r5 = ws.getRow(FIRST_DATA_ROW);
-    for (let c=1;c<=usedCols;c++) r5.getCell(c).value = r4Values[c];
-  }
-  // 2) Zeile 4 vollständig leeren
-  for (let c=1;c<=usedCols;c++) row4.getCell(c).value = null;
-  // 3) Nur DB/Web schreiben
-  for (const p of pairs){ ws.getRow(SUBHEADER_ROW).getCell(p.db).value = 'DB-Wert'; ws.getRow(SUBHEADER_ROW).getCell(p.web).value = 'Web-Wert'; }
-}
-
-app.get('/', (req,res)=> res.sendFile(path.join(__dirname,'index.html')));
-app.get('/api/health', (req,res)=> res.json({ ok:true, time:new Date().toISOString() }));
-
-app.post('/api/process-excel', upload.single('file'), async (req,res)=>{
-  try{
-    if(!req.file) return res.status(400).json({ error:'Bitte Excel-Datei hochladen (file).' });
+app.post('/api/process-excel', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Bitte Excel-Datei hochladen (file).' });
 
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(req.file.buffer);
-    const scraper = new SiemensProductScraper();
 
-    for (const ws of wb.worksheets){
-      // 0) Paare für Subheader gemäß Vorlage
-      const pairs = [
-        { db:TGT.MAT_DB,  web:TGT.MAT_WEB },
-        { db:TGT.PART_DB, web:TGT.PART_WEB },
-        { db:TGT.PRF_DB,  web:TGT.PRF_WEB },
-        { db:TGT.WERK_DB, web:TGT.WERK_WEB },
-        { db:TGT.NET_DB,  web:TGT.NET_WEB },
-        { db:TGT.L_DB,    web:TGT.L_WEB },
-        { db:TGT.B_DB,    web:TGT.B_WEB },
-        { db:TGT.H_DB,    web:TGT.H_WEB }
-      ];
-
-      // 1) Row4 reinigen + ggf. Row4-Daten nach Row5 verschieben, dann Subheader setzen
-      ensureRow4OnlySubheaders(ws, pairs);
-
-      // 2) Ursprungs-DB-Spalten erkennen (nur zum Lesen) — tolerant nach Text
-      const SRC = {
-        MAT_DB:  findColumnByIncludes(ws, HEADER_ROW, 'material', 'kurz') || TGT.MAT_DB,
-        PART_DB: findColumnByIncludes(ws, HEADER_ROW, 'artikel') || TGT.PART_DB,
-        PRF_DB:  findColumnByIncludes(ws, HEADER_ROW, 'fert', 'prüf') || findColumnByIncludes(ws, HEADER_ROW, 'fert','pruef') || TGT.PRF_DB,
-        WERK_DB: findColumnByIncludes(ws, HEADER_ROW, 'werkstoff') || TGT.WERK_DB,
-        NET_DB:  findColumnByIncludes(ws, HEADER_ROW, 'netto') || TGT.NET_DB,
-        NET_UNIT:findColumnByIncludes(ws, HEADER_ROW, 'gewicht', 'einheit') || TGT.NET_UNIT,
-        L_DB:    findColumnByIncludes(ws, HEADER_ROW, 'länge') || findColumnByIncludes(ws, HEADER_ROW, 'laenge') || TGT.L_DB,
-        B_DB:    findColumnByIncludes(ws, HEADER_ROW, 'breite') || TGT.B_DB,
-        H_DB:    findColumnByIncludes(ws, HEADER_ROW, 'höhe') || findColumnByIncludes(ws, HEADER_ROW, 'hoehe') || TGT.H_DB,
-        DIM_UNIT:findColumnByIncludes(ws, HEADER_ROW, 'einheit', 'abmaß') || findColumnByIncludes(ws, HEADER_ROW, 'einheit', 'abmass') || TGT.DIM_UNIT,
-        A2V:     findColumnByIncludes(ws, HEADER_ROW, 'a2v') || findColumnByIncludes(ws, HEADER_ROW, 'materialnummer') || TGT.A2V
-      };
-
-      // 3) Zeilen mit A2V sammeln (ab FIRST_DATA_ROW)
-      const last = ws.lastRow ? ws.lastRow.number : Math.max(ws.rowCount||0, ws.actualRowCount||0);
-      const rows = []; const ids = [];
-      for (let r = FIRST_DATA_ROW; r <= last; r++){
-        const v = getStr(ws.getRow(r).getCell(SRC.A2V).value).trim().toUpperCase();
-        if (v && v.startsWith('A2V')){ rows.push(r); ids.push(v); }
+    // 1) A2V-Nummern aus Spalte Z ab ursprünglicher Zeile 4 einsammeln
+    const tasks = [];
+    const rowsPerSheet = new Map(); // ws -> [rowIndex,...]
+    
+    for (const ws of wb.worksheets) {
+      const indices = [];
+      const last = ws.lastRow?.number || 0;
+      
+      // A2V-Nummern einsammeln (vor Strukturänderung)
+      for (let r = FIRST_DATA_ROW - 1; r <= last; r++) { // -1 weil wir noch die alte Struktur haben
+        const a2v = (ws.getCell(`${ORIGINAL_COLS.Z}${r}`).value || '').toString().trim().toUpperCase();
+        if (a2v.startsWith('A2V')) {
+          indices.push(r);
+          tasks.push(a2v);
+        }
       }
-      if (!ids.length) continue;
+      rowsPerSheet.set(ws, indices);
+    }
 
-      // 4) Scrapen gebündelt
-      const results = await scraper.scrapeMany(ids, SCRAPE_CONCURRENCY); // Map<A2V, obj>
+    // 2) Scrapen
+    console.log(`Scraping ${tasks.length} A2V numbers...`);
+    const resultsMap = await scraper.scrapeMany(tasks, SCRAPE_CONCURRENCY);
 
-      // 5) Schreiben in feste Zielspalten (DB-Spalten NICHT überschreiben)
-      for (let i=0; i<rows.length; i++){
-        const r = rows[i];
-        const a2v = ids[i];
-        const web = results.get(a2v) || {};
-
-        const db = {
-          mat: ws.getRow(r).getCell(SRC.MAT_DB).value,
-          part:ws.getRow(r).getCell(SRC.PART_DB).value,
-          prf: ws.getRow(r).getCell(SRC.PRF_DB).value,
-          werk:ws.getRow(r).getCell(SRC.WERK_DB).value,
-          net: ws.getRow(r).getCell(SRC.NET_DB).value,
-          netU: SRC.NET_UNIT ? ws.getRow(r).getCell(SRC.NET_UNIT).value : '',
-          L:   ws.getRow(r).getCell(SRC.L_DB).value,
-          B:   ws.getRow(r).getCell(SRC.B_DB).value,
-          H:   ws.getRow(r).getCell(SRC.H_DB).value
-        };
-
-        // Materialkurztext → D
-        {
-          const c = TGT.MAT_WEB; const webVal = (web.Produkttitel && web.Produkttitel!=='Nicht gefunden') ? web.Produkttitel : '';
-          if (webVal) ws.getRow(r).getCell(c).value = webVal;
-          fillColor(ws, c, r, webVal ? (eqText(db.mat, webVal) ? 'green' : 'red') : 'orange');
+    // 3) Excel-Struktur für jedes Worksheet umbauen
+    for (const ws of wb.worksheets) {
+      console.log(`Processing worksheet: ${ws.name}`);
+      
+      // 3.1) Neue Spaltenstruktur berechnen
+      const structure = calculateNewColumnStructure(ws);
+      
+      // 3.2) Spalten einfügen (von rechts nach links, um Indizes nicht zu verschieben)
+      const pairsReversed = [...structure.pairs].reverse();
+      for (const pair of pairsReversed) {
+        const insertPos = getColumnIndex(pair.original) + 1;
+        ws.spliceColumns(insertPos, 0, [null]);
+        console.log(`Inserted column after ${pair.original} for ${pair.label}`);
+      }
+      
+      // 3.3) Label-Zeile (Zeile 4) einfügen
+      ws.spliceRows(LABEL_ROW, 0, [null]);
+      console.log(`Inserted label row at position ${LABEL_ROW}`);
+      
+      // 3.4) Zeile 2 (technische Codes) und Zeile 3 (Klartext) für neue Spalten duplizieren
+      for (const pair of structure.pairs) {
+        // Werte aus der DB-Spalte holen
+        const dbTechCode = ws.getCell(`${pair.dbCol}2`).value;
+        const dbKlartext = ws.getCell(`${pair.dbCol}3`).value;
+        
+        // In Web-Spalte duplizieren
+        ws.getCell(`${pair.webCol}2`).value = dbTechCode;
+        ws.getCell(`${pair.webCol}3`).value = dbKlartext;
+        
+        // Label-Zeile befüllen
+        ws.getCell(`${pair.dbCol}${LABEL_ROW}`).value = 'DB-Wert';
+        ws.getCell(`${pair.webCol}${LABEL_ROW}`).value = 'Web-Wert';
+        
+        console.log(`Set labels for ${pair.label}: ${pair.dbCol} (DB-Wert), ${pair.webCol} (Web-Wert)`);
+      }
+      
+      // 3.5) A2V-Daten verarbeiten und Web-Werte eintragen
+      const prodRows = rowsPerSheet.get(ws) || [];
+      
+      for (const originalRow of prodRows) {
+        // Zeile wurde um 1 nach unten verschoben durch Label-Zeile
+        const currentRow = originalRow + 1;
+        
+        // A2V-Nummer bestimmen - neue Spaltenposition für Z berechnen
+        let zCol = ORIGINAL_COLS.Z;
+        if (structure.otherCols.has(ORIGINAL_COLS.Z)) {
+          zCol = structure.otherCols.get(ORIGINAL_COLS.Z);
         }
-        // Hersteller-Artikelnummer → G (Fallback A2V)
-        {
-          const c = TGT.PART_WEB; let webVal = (web['Weitere Artikelnummer'] && web['Weitere Artikelnummer']!=='Nicht gefunden') ? web['Weitere Artikelnummer'] : '';
-          if (!webVal && a2v) webVal = a2v;
-          if (webVal) ws.getRow(r).getCell(c).value = webVal;
-          const excelVal = db.part || a2v; fillColor(ws, c, r, webVal ? (eqPart(excelVal, webVal) ? 'green' : 'red') : 'orange');
-        }
-        // Fertigung/Prüfhinweis → Q
-        {
-          const c = TGT.PRF_WEB; const code = normalizeNCode(mapMaterialClassificationToExcel(web.Materialklassifizierung || ''));
-          if (code) ws.getRow(r).getCell(c).value = code;
-          fillColor(ws, c, r, code ? (eqN(db.prf, code) ? 'green' : 'red') : 'orange');
-        }
-        // Werkstoff → T
-        {
-          const c = TGT.WERK_WEB; const webVal = (web.Werkstoff && web.Werkstoff!=='Nicht gefunden') ? web.Werkstoff : '';
-          if (webVal) ws.getRow(r).getCell(c).value = webVal;
-          fillColor(ws, c, r, webVal ? (eqText(db.werk, webVal) ? 'green' : 'red') : 'orange');
-        }
-        // Nettogewicht → X (+ ggf. Einheit Y)
-        {
-          const c = TGT.NET_WEB; const webVal = (web.Gewicht && web.Gewicht!=='Nicht gefunden') ? web.Gewicht : '';
-          if (webVal){ const { value, unit } = parseWeight(webVal); ws.getRow(r).getCell(c).value = (value!=null) ? value : webVal; if (unit && TGT.NET_UNIT){ const uCell = ws.getRow(r).getCell(TGT.NET_UNIT); if (!uCell.value) uCell.value = unit; } fillColor(ws, c, r, eqWeight(db.net, db.netU, webVal) ? 'green' : 'red'); } else { fillColor(ws, c, r, 'orange'); }
-        }
-        // Abmessungen L/B/H → AA/AC/AE (+ Einheit AF optional)
-        {
-          const dims = (web.Abmessung && web.Abmessung!=='Nicht gefunden') ? parseDimensionsToLBH(web.Abmessung) : { L:null,B:null,H:null };
-          // L
-          { const c=TGT.L_WEB; if (dims.L!=null) ws.getRow(r).getCell(c).value = dims.L; if (toNumber(db.L)!=null && dims.L!=null) fillColor(ws, c, r, toNumber(db.L)===dims.L ? 'green':'red'); else if (dims.L==null) fillColor(ws, c, r, 'orange'); }
-          // B
-          { const c=TGT.B_WEB; if (dims.B!=null) ws.getRow(r).getCell(c).value = dims.B; if (toNumber(db.B)!=null && dims.B!=null) fillColor(ws, c, r, toNumber(db.B)===dims.B ? 'green':'red'); else if (dims.B==null) fillColor(ws, c, r, 'orange'); }
-          // H
-          { const c=TGT.H_WEB; if (dims.H!=null) ws.getRow(r).getCell(c).value = dims.H; if (toNumber(db.H)!=null && dims.H!=null) fillColor(ws, c, r, toNumber(db.H)===dims.H ? 'green':'red'); else if (dims.H==null) fillColor(ws, c, r, 'orange'); }
-          // Einheit Abmaße
-          if (TGT.DIM_UNIT){ const u = ws.getRow(r).getCell(TGT.DIM_UNIT); if (!u.value) u.value = 'MM'; }
+        
+        const a2v = (ws.getCell(`${zCol}${currentRow}`).value || '').toString().trim().toUpperCase();
+        const web = resultsMap.get(a2v) || {};
+        
+        console.log(`Processing row ${currentRow}, A2V: ${a2v}`);
+        
+        // 3.6) Web-Werte in die entsprechenden Web-Spalten eintragen
+        for (const pair of structure.pairs) {
+          const dbValue = ws.getCell(`${pair.dbCol}${currentRow}`).value;
+          let webValue = null;
+          let isEqual = false;
+          
+          switch (pair.original) {
+            case 'C': // Material-Kurztext
+              webValue = (web.Produkttitel && web.Produkttitel !== 'Nicht gefunden') ? web.Produkttitel : null;
+              isEqual = webValue ? eqText(dbValue || '', webValue) : false;
+              break;
+              
+            case 'E': // Herstellartikelnummer
+              webValue = (web['Weitere Artikelnummer'] && web['Weitere Artikelnummer'] !== 'Nicht gefunden') 
+                ? web['Weitere Artikelnummer'] : a2v;
+              isEqual = eqPart(dbValue || a2v, webValue);
+              break;
+              
+            case 'N': // Fert./Prüfhinweis (Materialklassifizierung)
+              if (web.Materialklassifizierung && web.Materialklassifizierung !== 'Nicht gefunden') {
+                const code = normalizeNCode(mapMaterialClassificationToExcel(web.Materialklassifizierung));
+                if (code) {
+                  webValue = code;
+                  isEqual = eqN(dbValue || '', code);
+                }
+              }
+              break;
+              
+            case 'P': // Werkstoff
+              webValue = (web.Werkstoff && web.Werkstoff !== 'Nicht gefunden') ? web.Werkstoff : null;
+              isEqual = webValue ? eqText(dbValue || '', webValue) : false;
+              break;
+              
+            case 'S': // Nettogewicht
+              if (web.Gewicht && web.Gewicht !== 'Nicht gefunden') {
+                const { value } = parseWeight(web.Gewicht);
+                if (value != null) {
+                  webValue = value;
+                  isEqual = eqWeight(dbValue, web.Gewicht);
+                }
+              }
+              break;
+              
+            case 'U': // Länge
+              if (web.Abmessung && web.Abmessung !== 'Nicht gefunden') {
+                const d = parseDimensionsToLBH(web.Abmessung);
+                if (d.L != null) {
+                  webValue = d.L;
+                  isEqual = eqDimension(dbValue, web.Abmessung, 'L');
+                }
+              }
+              break;
+              
+            case 'V': // Breite
+              if (web.Abmessung && web.Abmessung !== 'Nicht gefunden') {
+                const d = parseDimensionsToLBH(web.Abmessung);
+                if (d.B != null) {
+                  webValue = d.B;
+                  isEqual = eqDimension(dbValue, web.Abmessung, 'B');
+                }
+              }
+              break;
+              
+            case 'W': // Höhe
+              if (web.Abmessung && web.Abmessung !== 'Nicht gefunden') {
+                const d = parseDimensionsToLBH(web.Abmessung);
+                if (d.H != null) {
+                  webValue = d.H;
+                  isEqual = eqDimension(dbValue, web.Abmessung, 'H');
+                }
+              }
+              break;
+          }
+          
+          // Web-Wert eintragen falls vorhanden
+          if (webValue !== null) {
+            ws.getCell(`${pair.webCol}${currentRow}`).value = webValue;
+            
+            // Farbkodierung für beide Spalten des Paares
+            const color = isEqual ? 'green' : 'red';
+            fillColor(ws, `${pair.dbCol}${currentRow}`, color);
+            fillColor(ws, `${pair.webCol}${currentRow}`, color);
+            
+            console.log(`${pair.label}: DB="${dbValue}" vs Web="${webValue}" -> ${isEqual ? 'EQUAL' : 'DIFFERENT'}`);
+          }
         }
       }
     }
 
-    const out = await new ExcelJS.Workbook().xlsx.writeBuffer?.call({}) // ensure function presence
-    const buf = await wb.xlsx.writeBuffer();
+    const out = await wb.xlsx.writeBuffer();
     res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition','attachment; filename="DB_Produktvergleich_verarbeitet.xlsx"');
-    res.send(Buffer.from(buf));
+    res.send(Buffer.from(out));
+    
   } catch (err) {
-    console.error('PROCESS ERROR:', err && err.stack || err);
-    res.status(500).json({ error: String(err && err.message || err) });
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(PORT, ()=> console.log(`Server running at http://0.0.0.0:${PORT}`));
+app.listen(PORT, () => console.log(`Server running at http://0.0.0.0:${PORT}`));
